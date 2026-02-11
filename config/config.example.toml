@@ -1,0 +1,43 @@
+# Lucky Trading System — Example Configuration
+# Copy to config.toml and fill in your values.
+# config.toml is gitignored — your real config stays private.
+
+[exchange]
+main_wallet = ""           # your Hyperliquid main wallet address
+api_wallet = ""            # your API wallet address
+api_private_key = ""       # your API private key
+
+[strategy]
+vol_threshold = 2.0        # volume ratio vs 24h average
+lookback_bars = 48         # 30m bars for 24h range (48 = 24h)
+
+[risk]
+stop_loss_pct = 0.03       # e.g. 3% stop loss
+take_profit_pct = 0.05     # e.g. 5% take profit
+max_hold_hours = 48        # max hours before timeout close
+position_ratio = 0.20      # fraction of account equity per trade
+max_single_loss = 5.0      # max USD loss per trade
+
+[trailing]
+initial_stop_pct = 0.03
+trailing_pct = 0.04
+activation_pct = 0.02
+
+[optimization]
+min_trades = 30
+improvement_threshold = 0.30
+consec_loss_threshold = 3
+
+[notifications]
+discord_channel_id = ""
+discord_mention_1 = ""
+discord_mention_2 = ""
+
+[alerts]
+btc_support = 60000
+btc_resistance = 75000
+eth_support = 2000
+eth_resistance = 2500
+
+[token]
+address = ""               # meme token contract address (for monitoring)

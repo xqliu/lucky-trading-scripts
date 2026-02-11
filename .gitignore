@@ -1,0 +1,32 @@
+# Private config — NEVER commit!
+config/config.toml
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Private scripts
+luckytrader_monitor.py
+email_summary.py
+email_summary.sh
+gsc_report.py
+market_snapshot.py
+backtest_30m.py
+*.bak
+
+# State files
+memory/
+logs/
+state/
+*.json
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/

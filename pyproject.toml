@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luckytrader"
+version = "5.1.0"
+description = "Open-source trading infrastructure for Hyperliquid"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "hyperliquid-python-sdk",
+    "requests",
+    "eth-account",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+lucky-trade = "luckytrader.trade:main"
+lucky-signal = "luckytrader.signal:main"
+lucky-monitor = "luckytrader.monitor:main"
+
+[tool.setuptools.packages.find]
+include = ["luckytrader*"]
