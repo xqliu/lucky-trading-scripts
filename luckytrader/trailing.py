@@ -27,14 +27,14 @@ from luckytrader.trade import (
     cancel_order,
     MAIN_WALLET
 )
-from luckytrader.config import get_config
+from luckytrader.config import get_config, get_workspace_dir
 
 # 配置 — 从 config/params.toml 加载
 _cfg = get_config()
 INITIAL_STOP_PCT = _cfg.trailing.initial_stop_pct
 TRAILING_PCT = _cfg.trailing.trailing_pct
 ACTIVATION_PCT = _cfg.trailing.activation_pct
-STATE_FILE = Path(__file__).parent.parent / "memory/trading/trailing_state.json"
+STATE_FILE = get_workspace_dir() / "memory/trading/trailing_state.json"
 
 def load_state():
     """加载持仓状态"""

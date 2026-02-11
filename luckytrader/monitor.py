@@ -11,10 +11,10 @@ import requests
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from luckytrader.config import get_config
+from luckytrader.config import get_config, get_workspace_dir
 
 _SCRIPT_DIR = Path(__file__).parent
-_WORKSPACE_DIR = _SCRIPT_DIR.parent
+_WORKSPACE_DIR = get_workspace_dir()
 DECISIONS_FILE = _WORKSPACE_DIR / "memory/trading/DECISIONS.md"
 ALERT_FLAG = _WORKSPACE_DIR / "memory/trading/.alert_triggered"
 

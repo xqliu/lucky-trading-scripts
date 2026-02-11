@@ -39,6 +39,19 @@ def _find_config_dir() -> Path:
     return Path(__file__).parent.parent / "config"
 
 
+def get_workspace_dir() -> Path:
+    """Get workspace root directory.
+
+    Resolution order:
+    1. $LUCKYTRADER_CONFIG_DIR → grandparent (config_dir/../../)
+       e.g. .../workspace/trading/config → .../workspace
+    2. Fallback to ~/.openclaw/workspace
+    """
+    env_dir = os.environ.get("LUCKYTRADER_CONFIG_DIR")
+    if env_dir:
+        return Path(env_dir).parent.parent
+    return Path.home() / ".openclaw" / "workspace"
+
 
 # --- Data classes ---
 @dataclass(frozen=True)

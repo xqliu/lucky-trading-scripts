@@ -35,8 +35,9 @@ MAX_SINGLE_LOSS = _cfg.risk.max_single_loss
 DISCORD_CHANNEL_ID = _cfg.notifications.discord_channel_id
 DISCORD_MENTIONS = _cfg.notifications.discord_mentions
 
-_SCRIPT_DIR = Path(__file__).parent
-_WORKSPACE_DIR = _SCRIPT_DIR.parent
+from luckytrader.config import get_workspace_dir
+
+_WORKSPACE_DIR = get_workspace_dir()
 STATE_FILE = _WORKSPACE_DIR / "memory" / "trading" / "position_state.json"
 TRADES_FILE = _WORKSPACE_DIR / "memory" / "trading" / "TRADES.md"
 TRADE_LOG_FILE = _WORKSPACE_DIR / "memory" / "trading" / "trade_results.json"

@@ -8,10 +8,11 @@
 5. 输出优化建议报告
 """
 import json
+import os
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from luckytrader.signal import get_candles
-from luckytrader.config import get_config
+from luckytrader.config import get_config, get_workspace_dir
 
 SYSTEM_FILE = Path(__file__).parent.parent / "memory" / "trading" / "SYSTEM.md"
 
@@ -168,7 +169,8 @@ if __name__ == "__main__":
     result = optimize()
     
     # 保存结果
-    output = Path(__file__).parent.parent / "memory" / "trading" / "optimization_history.json"
+    output = get_workspace_dir() / "memory" / "trading" / "optimization_history.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
     history = []
     if output.exists():
         try:
