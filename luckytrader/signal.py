@@ -86,8 +86,10 @@ def get_recent_fills(limit=3):
 
 def analyze(coin='BTC'):
     candles_1h = get_candles(coin, '1h', 72)
-    _lookback = get_config().strategy.lookback_bars
-    candles_30m = get_candles(coin, '30m', 48)
+    _cfg_strategy = get_config().strategy
+    _lookback = _cfg_strategy.lookback_bars
+    _range = _cfg_strategy.range_bars
+    candles_30m = get_candles(coin, '30m', max(48, _range + 2))
     
     if not candles_1h or len(candles_1h) < 50:
         return {"error": "数据不足"}
@@ -104,18 +106,18 @@ def analyze(coin='BTC'):
     current_price = closes[-1]
     result['price'] = current_price
     
-    # 24h区间（用30m K线，更精确）
-    if candles_30m and len(candles_30m) >= 48:
-        last_48 = candles_30m[-49:-1]  # 过去24h不含当前
+    # Price range detection (configurable window)
+    if candles_30m and len(candles_30m) >= _range + 1:
+        range_slice = candles_30m[-(_range+1):-1]  # past N bars excluding current
     else:
-        last_48 = candles_1h[-25:-1]
+        range_slice = candles_30m[:-1] if candles_30m and len(candles_30m) > 1 else candles_1h[-25:-1]
     
-    high_24h = max(float(c['h']) for c in last_48)
-    low_24h = min(float(c['l']) for c in last_48)
-    range_24h = (high_24h - low_24h) / low_24h * 100
-    result['high_24h'] = high_24h
-    result['low_24h'] = low_24h
-    result['range_24h'] = range_24h
+    high_range = max(float(c['h']) for c in range_slice)
+    low_range = min(float(c['l']) for c in range_slice)
+    range_pct = (high_range - low_range) / low_range * 100
+    result['high_24h'] = high_range  # keep key names for compatibility
+    result['low_24h'] = low_range
+    result['range_24h'] = range_pct
     
     # 技术指标 (用于报告展示，不影响信号)
     ema_8 = ema(closes, 8)
@@ -159,8 +161,8 @@ def analyze(coin='BTC'):
     result['avg_volume_24h'] = avg_30m_vol
     result['volume_ratio'] = vol_ratio_30m
     
-    breakout_up = latest_30m_close > high_24h
-    breakout_down = latest_30m_close < low_24h
+    breakout_up = latest_30m_close > high_range
+    breakout_down = latest_30m_close < low_range
     _cfg = get_config()
     vol_confirm = vol_ratio_30m > _cfg.strategy.vol_threshold
     
@@ -173,10 +175,10 @@ def analyze(coin='BTC'):
     
     if breakout_up and vol_confirm:
         result['signal'] = 'LONG'
-        result['signal_reasons'] = [f'突破24h高点${high_24h:,.0f}', f'30m放量{vol_ratio_30m:.1f}x']
+        result['signal_reasons'] = [f'突破区间高点${high_range:,.0f}', f'放量{vol_ratio_30m:.1f}x']
     elif breakout_down and vol_confirm:
         result['signal'] = 'SHORT'
-        result['signal_reasons'] = [f'跌破24h低点${low_24h:,.0f}', f'30m放量{vol_ratio_30m:.1f}x']
+        result['signal_reasons'] = [f'跌破区间低点${low_range:,.0f}', f'放量{vol_ratio_30m:.1f}x']
     else:
         result['signal'] = 'HOLD'
         result['signal_reasons'] = []
@@ -219,7 +221,7 @@ def format_report(result):
     lines = []
     lines.append(f"💰 价格: ${result['price']:,.0f}")
     lines.append(f"📊 成交量: ${result['volume_usd']:,.0f} (均值: ${result['avg_volume_24h']:,.0f}, {result['volume_ratio']:.2f}x)")
-    lines.append(f"📏 24h区间: ${result['low_24h']:,.0f} - ${result['high_24h']:,.0f} ({result['range_24h']:.1f}%)")
+    lines.append(f"📏 区间: ${result['low_24h']:,.0f} - ${result['high_24h']:,.0f} ({result['range_24h']:.1f}%)")
     lines.append(f"📈 趋势: {result['trend']} (EMA8: {result['ema_8']:,.0f} / EMA21: {result['ema_21']:,.0f})")
     lines.append(f"📉 RSI: {result['rsi']:.1f}")
     

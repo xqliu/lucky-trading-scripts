@@ -58,6 +58,7 @@ def get_workspace_dir() -> Path:
 class StrategyConfig:
     vol_threshold: float = 2.0
     lookback_bars: int = 48
+    range_bars: int = 48
 
 @dataclass(frozen=True)
 class RiskConfig:
