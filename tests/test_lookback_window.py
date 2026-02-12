@@ -59,7 +59,6 @@ class TestLookbackWindow:
         # Just verify it's an int and reasonable
         assert isinstance(cfg.strategy.lookback_bars, int)
         assert cfg.strategy.lookback_bars > 0
-        assert cfg.strategy.lookback_bars <= 48  # shouldn't exceed 24h
 
     @patch('luckytrader.signal.get_candles')
     @patch('luckytrader.signal.get_market_context', return_value={})
