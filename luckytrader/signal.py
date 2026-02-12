@@ -4,7 +4,7 @@ Lucky Trading Signal System v5.1
 回测验证：104天30分钟K线，230笔交易，胜率54.8%，期望+1.02%/笔
 
 参数（全量优化，1015组合扫描，next_open入场）：
-- 入场：突破24h区间 + 1.25x放量
+- 入场：突破24h区间 + 放量确认（可配置窗口）
 - 止损：4%
 - 止盈：7%
 - 持仓上限：72h
@@ -86,7 +86,8 @@ def get_recent_fills(limit=3):
 
 def analyze(coin='BTC'):
     candles_1h = get_candles(coin, '1h', 72)
-    candles_30m = get_candles(coin, '30m', 48)  # 24h of 30m candles for breakout detection
+    _lookback = get_config().strategy.lookback_bars
+    candles_30m = get_candles(coin, '30m', 48)
     
     if not candles_1h or len(candles_1h) < 50:
         return {"error": "数据不足"}
@@ -142,7 +143,10 @@ def analyze(coin='BTC'):
     if candles_30m and len(candles_30m) >= 3:
         latest_30m_close = float(candles_30m[-2]['c'])  # 上一根已收盘
         latest_30m_vol = float(candles_30m[-2]['v']) * float(candles_30m[-2]['c'])
-        avg_30m_vol = sum(float(c['v']) * float(c['c']) for c in candles_30m[-50:-2]) / 48 if len(candles_30m) >= 50 else 0
+        # Volume average over configurable lookback window
+        vol_start = max(0, len(candles_30m) - 2 - _lookback)
+        vol_slice = candles_30m[vol_start:-2]
+        avg_30m_vol = sum(float(c['v']) * float(c['c']) for c in vol_slice) / len(vol_slice) if vol_slice else 0
         vol_ratio_30m = latest_30m_vol / avg_30m_vol if avg_30m_vol > 0 else 0
     else:
         latest_30m_close = current_price
@@ -214,7 +218,7 @@ def format_report(result):
     
     lines = []
     lines.append(f"💰 价格: ${result['price']:,.0f}")
-    lines.append(f"📊 成交量: ${result['volume_usd']:,.0f} (24h均值: ${result['avg_volume_24h']:,.0f}, {result['volume_ratio']:.2f}x)")
+    lines.append(f"📊 成交量: ${result['volume_usd']:,.0f} (均值: ${result['avg_volume_24h']:,.0f}, {result['volume_ratio']:.2f}x)")
     lines.append(f"📏 24h区间: ${result['low_24h']:,.0f} - ${result['high_24h']:,.0f} ({result['range_24h']:.1f}%)")
     lines.append(f"📈 趋势: {result['trend']} (EMA8: {result['ema_8']:,.0f} / EMA21: {result['ema_21']:,.0f})")
     lines.append(f"📉 RSI: {result['rsi']:.1f}")
