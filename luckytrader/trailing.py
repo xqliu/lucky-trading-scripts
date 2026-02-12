@@ -13,7 +13,7 @@ import json
 import sys
 import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # 添加脚本目录到 path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -241,7 +241,8 @@ def check_and_update_trailing_stop(coin: str, position: dict, state: dict):
 def main():
     """主函数：检查所有持仓的移动止损"""
     print(f"\n{'='*50}")
-    print(f"🔄 Trailing Stop Check - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    _CST = timezone(timedelta(hours=8))
+    print(f"🔄 Trailing Stop Check - {datetime.now(_CST).strftime('%Y-%m-%d %H:%M:%S CST')}")
     print(f"{'='*50}\n")
     
     positions = get_positions()

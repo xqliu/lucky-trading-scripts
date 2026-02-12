@@ -256,10 +256,11 @@ def format_report(result):
     # 最近成交
     fills = result.get('recent_fills', [])
     if fills:
-        from datetime import datetime, timezone
+        from datetime import datetime, timezone, timedelta
+        _CST = timezone(timedelta(hours=8))
         lines.append(f"\n📋 最近成交:")
         for f in fills:
-            t = datetime.fromtimestamp(f['time']/1000, tz=timezone.utc).strftime('%m-%d %H:%M')
+            t = datetime.fromtimestamp(f['time']/1000, tz=timezone.utc).astimezone(_CST).strftime('%m-%d %H:%M')
             lines.append(f"  {t} | {f['coin']} {f['side']} {f['size']} @ ${float(f['price']):,.0f}")
     
     return '\n'.join(lines)

@@ -174,7 +174,8 @@ def log_trade(action, coin, direction, size, price, sl=None, tp=None, reason="")
 def execute(dry_run=False):
     """主执行流程。dry_run=True 时只分析不下单。"""
     mode = "🧪 DRY RUN" if dry_run else "🔴 LIVE"
-    print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}] {mode} 执行信号检查...")
+    _CST = timezone(timedelta(hours=8))
+    print(f"[{datetime.now(_CST).strftime('%H:%M:%S CST')}] {mode} 执行信号检查...")
     
     # 1. 检查是否有持仓
     position = get_position("BTC")
