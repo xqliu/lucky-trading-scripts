@@ -363,3 +363,155 @@ class TestSlTpTriggerFillPrice:
         assert result["action"] == "CLOSED_BY_TRIGGER"
         expected_pnl = (72000 - 67000) / 67000 * 100  # 7.46%
         assert abs(result["pnl_pct"] - expected_pnl) < 0.01
+
+
+class TestEmergencyCloseFailurePropagation:
+    """C3: emergency_close must raise when all retries fail, not silently return."""
+
+    @patch('luckytrader.execute.log_trade')
+    @patch('luckytrader.execute.notify_discord')
+    def test_emergency_close_raises_on_all_retries_failed(self, mock_notify, mock_log, mock_hl):
+        """If all retries fail, emergency_close must raise RuntimeError."""
+        from luckytrader.execute import emergency_close
+
+        mock_hl.place_market_order.return_value = {"status": "err", "response": "Exchange down"}
+
+        with pytest.raises(RuntimeError, match="紧急平仓失败"):
+            emergency_close("BTC", 0.001, True, max_retries=2)
+
+    @patch('luckytrader.execute.log_trade')
+    def test_emergency_close_success_does_not_raise(self, mock_log, mock_hl):
+        """Successful emergency close should NOT raise."""
+        from luckytrader.execute import emergency_close
+
+        mock_hl.place_market_order.return_value = {"status": "ok"}
+
+        with patch('luckytrader.execute.save_state'):
+            # Should not raise
+            emergency_close("BTC", 0.001, True)
+
+    @patch('luckytrader.execute.notify_discord')
+    @patch('luckytrader.execute.get_coin_info', return_value={"szDecimals": 5})
+    @patch('luckytrader.execute.log_trade')
+    def test_open_position_catches_emergency_close_failure(self, mock_log, mock_coin, mock_notify, mock_hl):
+        """open_position should handle emergency_close failure gracefully."""
+        from luckytrader.execute import open_position
+
+        mock_hl.get_account_info.return_value = {"account_value": "217.76"}
+        mock_hl.place_market_order.side_effect = [
+            {"status": "ok"},  # initial open succeeds
+            {"status": "err"},  # emergency close attempt 1
+            {"status": "err"},  # emergency close attempt 2
+            {"status": "err"},  # emergency close attempt 3
+        ]
+        mock_hl.place_stop_loss.return_value = {"status": "err", "response": "failed"}
+
+        with patch('luckytrader.execute.get_position') as mock_pos:
+            mock_pos.return_value = {
+                "coin": "BTC", "size": 0.001, "direction": "LONG",
+                "entry_price": 67000.0, "unrealized_pnl": 0,
+                "liquidation_price": 0,
+            }
+            with patch('luckytrader.execute.save_state'):
+                result = open_position("LONG", {"price": 67000, "signal_reasons": []})
+
+        # Should indicate the critical failure state
+        assert result["action"] == "EMERGENCY_CLOSE_FAILED"
+
+    @patch('luckytrader.execute.notify_discord')
+    @patch('luckytrader.execute.get_coin_info', return_value={"szDecimals": 5})
+    @patch('luckytrader.execute.log_trade')
+    def test_tp_failure_triggers_emergency_close_failed(self, mock_log, mock_coin, mock_notify, mock_hl):
+        """TP failure path: SL succeeds, TP fails, emergency_close fails → EMERGENCY_CLOSE_FAILED."""
+        from luckytrader.execute import open_position
+
+        mock_hl.get_account_info.return_value = {"account_value": "217.76"}
+        mock_hl.place_market_order.side_effect = [
+            {"status": "ok"},  # initial open succeeds
+            {"status": "err"},  # emergency close attempt 1
+            {"status": "err"},  # emergency close attempt 2
+            {"status": "err"},  # emergency close attempt 3
+        ]
+        mock_hl.place_stop_loss.return_value = {"status": "ok"}
+        mock_hl.place_take_profit.return_value = {"status": "err", "response": "failed"}
+        mock_hl.cancel_order.return_value = {"status": "ok"}
+
+        with patch('luckytrader.execute.get_position') as mock_pos, \
+             patch('luckytrader.execute.get_open_orders_detailed', return_value=[]):
+            mock_pos.return_value = {
+                "coin": "BTC", "size": 0.001, "direction": "LONG",
+                "entry_price": 67000.0, "unrealized_pnl": 0,
+                "liquidation_price": 0,
+            }
+            with patch('luckytrader.execute.save_state'):
+                result = open_position("LONG", {"price": 67000, "signal_reasons": []})
+
+        assert result["action"] == "EMERGENCY_CLOSE_FAILED"
+
+
+class TestFixSlTpEmergencyCloseFailure:
+    """fix_sl_tp must not crash when emergency_close raises RuntimeError."""
+
+    @patch('luckytrader.execute.notify_discord')
+    @patch('luckytrader.execute.log_trade')
+    def test_fix_sl_tp_survives_emergency_close_failure(self, mock_log, mock_notify, mock_hl):
+        """fix_sl_tp should swallow RuntimeError from emergency_close."""
+        from luckytrader.execute import fix_sl_tp
+
+        mock_hl.place_stop_loss.side_effect = Exception("exchange down")
+        mock_hl.place_market_order.return_value = {"status": "err"}  # emergency_close fails
+
+        position = {
+            "coin": "BTC", "size": 0.001, "direction": "LONG",
+            "entry_price": 67000.0,
+        }
+
+        with patch('luckytrader.execute.check_sl_tp_orders', return_value=(False, True)), \
+             patch('luckytrader.execute.save_state'):
+            # Should NOT raise — RuntimeError is caught internally
+            fix_sl_tp(position)
+
+
+class TestClosePositionChecksResult:
+    """close_position must not clear state if the market order fails."""
+
+    @patch('luckytrader.execute.log_trade')
+    def test_close_position_does_not_clear_state_on_failure(self, mock_log, mock_hl):
+        """If place_market_order returns err, state must NOT be cleared."""
+        from luckytrader.execute import close_position, load_state
+
+        mock_hl.place_market_order.return_value = {"status": "err", "response": "exchange down"}
+        mock_hl.get_open_orders_detailed.return_value = []
+
+        position = {
+            "coin": "BTC", "size": 0.001, "direction": "LONG",
+            "entry_price": 67000.0,
+        }
+
+        with patch('luckytrader.execute.save_state') as mock_save:
+            with pytest.raises(RuntimeError, match="平仓失败"):
+                close_position(position)
+            # save_state should NOT have been called with position=None
+            for call_args in mock_save.call_args_list:
+                state_arg = call_args[0][0]
+                assert state_arg.get("position") is not None, \
+                    "State was cleared despite failed close — position would be orphaned!"
+
+    @patch('luckytrader.execute.log_trade')
+    def test_close_position_clears_state_on_success(self, mock_log, mock_hl):
+        """Successful close should clear state as before."""
+        from luckytrader.execute import close_position
+
+        mock_hl.place_market_order.return_value = {"status": "ok"}
+        mock_hl.get_open_orders_detailed.return_value = []
+        mock_hl.get_market_price.return_value = 68000.0
+
+        position = {
+            "coin": "BTC", "size": 0.001, "direction": "LONG",
+            "entry_price": 67000.0,
+        }
+
+        with patch('luckytrader.execute.save_state') as mock_save:
+            close_position(position)
+            mock_save.assert_called_once()
+            assert mock_save.call_args[0][0]["position"] is None

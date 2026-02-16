@@ -161,7 +161,7 @@ def run_signal_executor():
         print(f"执行结果: {action}")
         
         # 如果开仓或平仓，唤醒 Lucky 通知
-        if action in ("OPENED", "TIMEOUT_CLOSE", "SL_FAILED_CLOSED", "TP_FAILED_CLOSED"):
+        if action in ("OPENED", "TIMEOUT_CLOSE", "SL_FAILED_CLOSED", "TP_FAILED_CLOSED", "EMERGENCY_CLOSE_FAILED", "CLOSE_FAILED"):
             message = f"⚡ 交易执行: {action}\n{json.dumps(result, default=str)}"
             try:
                 openclaw_path = shutil.which("openclaw") or str(Path.home() / ".local/bin/openclaw")

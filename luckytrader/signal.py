@@ -185,11 +185,11 @@ def analyze(coin='BTC'):
     
     # 止损/止盈（回测最优参数）
     if result['signal'] == 'LONG':
-        result['suggested_stop'] = round(current_price * (1 - _cfg.risk.stop_loss_pct), 1)
-        result['suggested_tp'] = round(current_price * (1 + _cfg.risk.take_profit_pct), 1)
+        result['suggested_stop'] = round(current_price * (1 - _cfg.risk.stop_loss_pct))
+        result['suggested_tp'] = round(current_price * (1 + _cfg.risk.take_profit_pct))
     elif result['signal'] == 'SHORT':
-        result['suggested_stop'] = round(current_price * (1 + _cfg.risk.stop_loss_pct), 1)
-        result['suggested_tp'] = round(current_price * (1 - _cfg.risk.take_profit_pct), 1)
+        result['suggested_stop'] = round(current_price * (1 + _cfg.risk.stop_loss_pct))
+        result['suggested_tp'] = round(current_price * (1 - _cfg.risk.take_profit_pct))
     
     return result
 

@@ -53,7 +53,9 @@ def load_trade_log():
 
 def save_trade_log(log):
     TRADE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TRADE_LOG_FILE.write_text(json.dumps(log, indent=2, default=str))
+    tmp_file = TRADE_LOG_FILE.with_suffix('.tmp')
+    tmp_file.write_text(json.dumps(log, indent=2, default=str))
+    tmp_file.rename(TRADE_LOG_FILE)
 
 def record_trade_result(pnl_pct, direction, coin, reason):
     """记录交易结果并检查连亏"""
@@ -112,8 +114,10 @@ def load_state():
 
 def save_state(state):
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(STATE_FILE, 'w') as f:
+    tmp_file = STATE_FILE.with_suffix('.tmp')
+    with open(tmp_file, 'w') as f:
         json.dump(state, f, indent=2)
+    tmp_file.rename(STATE_FILE)
 
 def get_position(coin):
     """获取当前持仓"""
@@ -231,7 +235,10 @@ def execute(dry_run=False):
                     print(f"🧪 DRY RUN: 超时 {elapsed:.1f}h，WOULD 平仓 (PnL {pnl_pct:+.2f}%)")
                     return {"action": "DRY_RUN_WOULD_TIMEOUT_CLOSE", "elapsed": elapsed, "pnl_pct": pnl_pct, "dry_run": True}
                 print(f"⏰ 超时平仓！已持仓 {elapsed:.1f}h")
-                close_position(position)
+                try:
+                    close_position(position)
+                except RuntimeError as e:
+                    return {"action": "CLOSE_FAILED", "error": str(e)}
                 record_trade_result(pnl_pct, position["direction"], position["coin"], "TIMEOUT")
                 notify_discord(f"⏰ **超时平仓** {position['direction']} {position['coin']}\n💰 入场: ${position['entry_price']:,.2f}\n📊 盈亏: {pnl_pct:+.2f}% | 持仓 {elapsed:.1f}h")
                 return {"action": "TIMEOUT_CLOSE", "elapsed": elapsed, "pnl_pct": pnl_pct}
@@ -283,11 +290,11 @@ def dry_run_open(signal, analysis):
     size = round(position_value / price, sz_decimals)
     
     if is_long:
-        sl_price = round(price * (1 - STOP_LOSS_PCT), 1)
-        tp_price = round(price * (1 + TAKE_PROFIT_PCT), 1)
+        sl_price = round(price * (1 - STOP_LOSS_PCT))
+        tp_price = round(price * (1 + TAKE_PROFIT_PCT))
     else:
-        sl_price = round(price * (1 + STOP_LOSS_PCT), 1)
-        tp_price = round(price * (1 - TAKE_PROFIT_PCT), 1)
+        sl_price = round(price * (1 + STOP_LOSS_PCT))
+        tp_price = round(price * (1 - TAKE_PROFIT_PCT))
     
     print(f"\n{'='*50}")
     print(f"🧪 DRY RUN — WOULD OPEN: {signal} {coin}")
@@ -342,11 +349,11 @@ def open_position(signal, analysis):
     
     # 计算 SL/TP 价格
     if is_long:
-        sl_price = round(price * (1 - STOP_LOSS_PCT), 1)
-        tp_price = round(price * (1 + TAKE_PROFIT_PCT), 1)
+        sl_price = round(price * (1 - STOP_LOSS_PCT))
+        tp_price = round(price * (1 + TAKE_PROFIT_PCT))
     else:
-        sl_price = round(price * (1 + STOP_LOSS_PCT), 1)
-        tp_price = round(price * (1 - TAKE_PROFIT_PCT), 1)
+        sl_price = round(price * (1 + STOP_LOSS_PCT))
+        tp_price = round(price * (1 - TAKE_PROFIT_PCT))
     
     print(f"\n{'='*50}")
     print(f"🚀 开仓: {signal} {coin}")
@@ -382,11 +389,11 @@ def open_position(signal, analysis):
     
     # 用实际入场价重新计算SL/TP
     if is_long:
-        sl_price = round(actual_entry * (1 - STOP_LOSS_PCT), 1)
-        tp_price = round(actual_entry * (1 + TAKE_PROFIT_PCT), 1)
+        sl_price = round(actual_entry * (1 - STOP_LOSS_PCT))
+        tp_price = round(actual_entry * (1 + TAKE_PROFIT_PCT))
     else:
-        sl_price = round(actual_entry * (1 + STOP_LOSS_PCT), 1)
-        tp_price = round(actual_entry * (1 - TAKE_PROFIT_PCT), 1)
+        sl_price = round(actual_entry * (1 + STOP_LOSS_PCT))
+        tp_price = round(actual_entry * (1 - TAKE_PROFIT_PCT))
     
     # Step 2: 设止损
     print(f"\n[2/3] 设止损 ${sl_price:,.2f}...")
@@ -398,7 +405,10 @@ def open_position(signal, analysis):
     except Exception as e:
         print(f"❌ 止损设置失败: {e}")
         print("🚨 紧急平仓！")
-        emergency_close(coin, actual_size, is_long)
+        try:
+            emergency_close(coin, actual_size, is_long)
+        except RuntimeError as close_err:
+            return {"action": "EMERGENCY_CLOSE_FAILED", "error": str(close_err)}
         return {"action": "SL_FAILED_CLOSED", "error": str(e)}
     
     # Step 3: 设止盈
@@ -419,7 +429,10 @@ def open_position(signal, analysis):
                     cancel_order(coin, o["oid"])
         except:
             pass
-        emergency_close(coin, actual_size, is_long)
+        try:
+            emergency_close(coin, actual_size, is_long)
+        except RuntimeError as close_err:
+            return {"action": "EMERGENCY_CLOSE_FAILED", "error": str(close_err)}
         return {"action": "TP_FAILED_CLOSED", "error": str(e)}
     
     # 全部成功，保存状态
@@ -475,7 +488,7 @@ def emergency_close(coin, size, is_long, max_retries=3):
             if attempt < max_retries:
                 time.sleep(2 ** attempt)  # exponential backoff
     
-    # All retries failed — persist danger state and alert
+    # All retries failed — persist danger state, alert, and RAISE
     print("❌❌ 紧急平仓全部失败！持久化告警...")
     danger_file = _WORKSPACE_DIR / "memory" / "trading" / "DANGER_UNPROTECTED.json"
     danger_file.parent.mkdir(parents=True, exist_ok=True)
@@ -487,6 +500,7 @@ def emergency_close(coin, size, is_long, max_retries=3):
         "reason": "emergency_close failed after all retries",
     }, indent=2))
     notify_discord(f"🚨🚨🚨 **紧急平仓失败** — {coin} 仓位无保护！需要人工干预！")
+    raise RuntimeError(f"紧急平仓失败: {coin} size={size} — 仓位无保护！")
 
 def close_position(position):
     """正常平仓（超时等原因）"""
@@ -507,7 +521,11 @@ def close_position(position):
     # 市价平仓
     result = place_market_order(coin, not is_long, size)
     print(f"平仓结果: {json.dumps(result, indent=2)}")
-    
+
+    if result.get("status") == "err":
+        notify_discord(f"🚨 **超时平仓失败** — {coin} 仓位可能仍存在！需要人工干预！\n错误: {result}")
+        raise RuntimeError(f"平仓失败: {coin} size={size} — {result}")
+
     save_state({"position": None})
     log_trade("CLOSE", coin, position["direction"], size,
               get_market_price(coin), reason="超时平仓")
@@ -534,11 +552,11 @@ def fix_sl_tp(position):
     is_long = position["direction"] == "LONG"
     
     if is_long:
-        sl_price = round(entry * (1 - STOP_LOSS_PCT), 1)
-        tp_price = round(entry * (1 + TAKE_PROFIT_PCT), 1)
+        sl_price = round(entry * (1 - STOP_LOSS_PCT))
+        tp_price = round(entry * (1 + TAKE_PROFIT_PCT))
     else:
-        sl_price = round(entry * (1 + STOP_LOSS_PCT), 1)
-        tp_price = round(entry * (1 - TAKE_PROFIT_PCT), 1)
+        sl_price = round(entry * (1 + STOP_LOSS_PCT))
+        tp_price = round(entry * (1 - TAKE_PROFIT_PCT))
     
     sl_exists, tp_exists = check_sl_tp_orders(coin, position)
     
@@ -550,7 +568,10 @@ def fix_sl_tp(position):
         except Exception as e:
             print(f"❌ 止损补设失败: {e}")
             print("🚨 紧急平仓！")
-            emergency_close(coin, size, is_long)
+            try:
+                emergency_close(coin, size, is_long)
+            except RuntimeError:
+                pass  # already persisted danger state and notified
             return
     
     if not tp_exists:

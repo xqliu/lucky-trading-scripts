@@ -83,9 +83,9 @@ def place_market_order(coin: str, is_buy: bool, size: float):
     current_price = get_market_price(coin)
     slippage = 0.001  # 0.1%
     if is_buy:
-        price = current_price * (1 + slippage)
+        price = round(current_price * (1 + slippage))
     else:
-        price = current_price * (1 - slippage)
+        price = round(current_price * (1 - slippage))
     
     order_result = exchange.order(
         coin,

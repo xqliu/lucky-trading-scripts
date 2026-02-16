@@ -559,11 +559,11 @@ class NotificationManager:
 
         self._send_discord_message(message)
 
-    def notify_error(self, error_message: str):
-        """错误通知"""
-        if self.should_send_notification("ERROR", error_message):
+    def notify_error(self, error_message: str, critical: bool = False):
+        """错误通知。critical=True 绕过去重（安全相关告警）"""
+        if critical or self.should_send_notification("ERROR", error_message):
             message = f"⚠️ **系统错误**\n{error_message}"
-            self._send_discord_message(message)
+            self._send_discord_message(message, force=critical)
 
     def notify_critical_error(self, error_message: str):
         """关键错误告警"""
@@ -640,11 +640,13 @@ class StateManager:
         }
 
     def save_state(self, state: Dict):
-        """保存状态"""
+        """保存状态（原子写入：temp file + rename）"""
         try:
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.state_file, 'w') as f:
+            tmp_file = self.state_file.with_suffix('.tmp')
+            with open(tmp_file, 'w') as f:
                 json.dump(state, f, indent=2, default=str)
+            tmp_file.rename(self.state_file)
             self.state = state
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
@@ -816,10 +818,13 @@ class WSMonitor:
                             trade_result = await self.trade_executor.execute_signal(signal_result)
 
                             if trade_result.get("action") == "OPENED":
-                                self.notification_manager.notify_trade_opened(trade_result)
+                                # 通知由 execute.open_position() 内部发送，不重复
                                 self.state_manager.update_trading_status(signal_result["signal"])
                             elif trade_result.get("action") == "ERROR":
-                                self.notification_manager.notify_error(f"Trade execution failed: {trade_result.get('error')}")
+                                # execute_signal 的 try/except 异常，execute.py 内部可能未通知
+                                self.notification_manager.notify_error(
+                                    f"Trade execution failed: {trade_result.get('error')}",
+                                    critical=True)
 
                         # 更新处理计数
                         if processed_count % 100 == 0:

@@ -91,7 +91,10 @@ def mock_hl():
     }
     _fake_hl.get_open_orders_detailed.side_effect = None
     _fake_hl.get_open_orders_detailed.return_value = []
+    _fake_hl.place_market_order.side_effect = None
     _fake_hl.place_market_order.return_value = {"status": "ok"}
+    _fake_hl.place_stop_loss.side_effect = None
+    _fake_hl.place_take_profit.side_effect = None
     _fake_hl.place_stop_loss.return_value = {"status": "ok"}
     _fake_hl.place_take_profit.return_value = {"status": "ok"}
     _fake_hl.cancel_order.return_value = {"status": "ok"}

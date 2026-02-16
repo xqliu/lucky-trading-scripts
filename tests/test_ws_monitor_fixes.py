@@ -314,3 +314,50 @@ class TestModuleLevelConfig:
         # Instead, classes should access config lazily
         # Check that NotificationManager inits without module-level _config
         assert hasattr(wsm, 'NotificationManager')
+
+
+# === Fix H1: Critical alerts must bypass deduplication ===
+
+class TestCriticalAlertsBypassDedup:
+    """Safety-critical notifications must not be suppressed by deduplication."""
+
+    def test_notify_error_sends_duplicate_critical_alerts(self):
+        """notify_error with critical=True should send even if same message was just sent."""
+        from luckytrader.ws_monitor import NotificationManager
+
+        nm = NotificationManager()
+        sent_messages = []
+
+        def mock_send(msg, force=False):
+            sent_messages.append(msg)
+
+        nm._send_discord_message = mock_send
+
+        error_msg = "紧急平仓失败: BTC 仓位无保护！"
+
+        # Send same critical error twice in quick succession
+        nm.notify_error(error_msg, critical=True)
+        nm.notify_error(error_msg, critical=True)
+
+        # Both should be sent — critical errors bypass dedup
+        assert len(sent_messages) == 2
+
+    def test_notify_error_non_critical_deduplicates(self):
+        """Non-critical notify_error should still deduplicate as before."""
+        from luckytrader.ws_monitor import NotificationManager
+
+        nm = NotificationManager()
+        sent_messages = []
+
+        def mock_send(msg, force=False):
+            sent_messages.append(msg)
+
+        nm._send_discord_message = mock_send
+
+        error_msg = "API timeout"
+
+        nm.notify_error(error_msg)
+        nm.notify_error(error_msg)
+
+        # Only first should be sent — dedup works for non-critical
+        assert len(sent_messages) == 1

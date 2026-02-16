@@ -48,14 +48,15 @@ class TestEmergencyCloseRetry:
         
         try:
             from luckytrader.execute import emergency_close
-            emergency_close("BTC", 0.001, True, max_retries=2)
-            
+            with pytest.raises(RuntimeError, match="紧急平仓失败"):
+                emergency_close("BTC", 0.001, True, max_retries=2)
+
             danger_file = tmp_path / "memory" / "trading" / "DANGER_UNPROTECTED.json"
             assert danger_file.exists()
             data = json.loads(danger_file.read_text())
             assert data["coin"] == "BTC"
             assert data["is_long"] == True
-            
+
             mock_notify.assert_called_once()
             assert "紧急平仓失败" in mock_notify.call_args[0][0]
         finally:
