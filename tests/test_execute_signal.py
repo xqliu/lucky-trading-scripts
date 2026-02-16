@@ -145,7 +145,7 @@ class TestExecuteFlow:
     def test_detect_sl_tp_trigger(self, mock_notify, mock_hl):
         """State says position exists but chain says no → SL/TP was triggered."""
         from luckytrader.execute import execute
-        
+
         state = {
             "position": {
                 "coin": "BTC", "direction": "LONG", "size": 0.001,
@@ -153,16 +153,17 @@ class TestExecuteFlow:
                 "sl_price": 64320.0, "tp_price": 71690.0,
             }
         }
-        
+
         mock_hl.get_market_price.return_value = 71800.0  # above TP → TP triggered
-        
+
         with patch('luckytrader.execute.get_position', return_value=None):
             with patch('luckytrader.execute.load_state', return_value=state):
                 with patch('luckytrader.execute.save_state') as mock_save:
                     with patch('luckytrader.execute.record_trade_result') as mock_record:
                         with patch('luckytrader.execute.log_trade'):
-                            result = execute()
-        
+                            with patch('luckytrader.execute.get_recent_fills', return_value=[]):
+                                result = execute()
+
         assert result["action"] == "CLOSED_BY_TRIGGER"
         assert result["reason"] == "TP"
         mock_save.assert_called_with({"position": None})
@@ -299,3 +300,66 @@ class TestStateIO:
             assert loaded["position"]["coin"] == "BTC"
         finally:
             execute_signal.STATE_FILE = orig
+
+
+class TestSlTpTriggerFillPrice:
+    """Fix 8: SL/TP trigger detection should use fill price, not market price."""
+
+    @patch('luckytrader.execute.notify_discord')
+    def test_sl_tp_trigger_uses_fill_price(self, mock_notify, mock_hl):
+        """When SL/TP triggered, PnL should use actual fill price from get_recent_fills."""
+        from luckytrader.execute import execute
+        from luckytrader.signal import get_recent_fills
+
+        state = {
+            "position": {
+                "coin": "BTC", "direction": "LONG", "size": 0.001,
+                "entry_price": 67000.0, "entry_time": datetime.now(timezone.utc).isoformat(),
+                "sl_price": 64320.0, "tp_price": 71690.0,
+            }
+        }
+
+        # Fill at 71500 (actual TP fill), market drifted to 72000
+        fill_data = [{"coin": "BTC", "side": "SELL", "size": "0.001", "price": "71500", "time": 1234567890}]
+        mock_hl.get_market_price.return_value = 72000.0
+
+        with patch('luckytrader.execute.get_position', return_value=None), \
+             patch('luckytrader.execute.load_state', return_value=state), \
+             patch('luckytrader.execute.save_state'), \
+             patch('luckytrader.execute.record_trade_result') as mock_record, \
+             patch('luckytrader.execute.log_trade'), \
+             patch('luckytrader.execute.get_recent_fills', return_value=fill_data):
+            result = execute()
+
+        assert result["action"] == "CLOSED_BY_TRIGGER"
+        # PnL should be based on fill price 71500, not market 72000
+        expected_pnl = (71500 - 67000) / 67000 * 100  # 6.72%
+        assert abs(result["pnl_pct"] - expected_pnl) < 0.01, \
+            f"PnL {result['pnl_pct']:.2f}% should be {expected_pnl:.2f}% (fill price)"
+
+    @patch('luckytrader.execute.notify_discord')
+    def test_sl_tp_trigger_falls_back_to_market_price(self, mock_notify, mock_hl):
+        """When no fills available, fall back to market price."""
+        from luckytrader.execute import execute
+
+        state = {
+            "position": {
+                "coin": "BTC", "direction": "LONG", "size": 0.001,
+                "entry_price": 67000.0, "entry_time": datetime.now(timezone.utc).isoformat(),
+                "sl_price": 64320.0, "tp_price": 71690.0,
+            }
+        }
+
+        mock_hl.get_market_price.return_value = 72000.0
+
+        with patch('luckytrader.execute.get_position', return_value=None), \
+             patch('luckytrader.execute.load_state', return_value=state), \
+             patch('luckytrader.execute.save_state'), \
+             patch('luckytrader.execute.record_trade_result'), \
+             patch('luckytrader.execute.log_trade'), \
+             patch('luckytrader.execute.get_recent_fills', return_value=[]):
+            result = execute()
+
+        assert result["action"] == "CLOSED_BY_TRIGGER"
+        expected_pnl = (72000 - 67000) / 67000 * 100  # 7.46%
+        assert abs(result["pnl_pct"] - expected_pnl) < 0.01

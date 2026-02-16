@@ -15,7 +15,7 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from luckytrader.signal import analyze
+from luckytrader.signal import analyze, get_recent_fills
 from luckytrader.trade import (
     get_account_info, get_market_price, get_open_orders_detailed,
     place_market_order, place_stop_loss, place_take_profit, cancel_order,
@@ -185,9 +185,13 @@ def execute(dry_run=False):
     if not position and state.get("position"):
         sp = state["position"]
         print(f"⚡ 持仓已被平仓（SL/TP触发）: {sp['direction']} {sp['coin']}")
-        # 计算盈亏（用当前价估算，实际以链上成交为准）
-        current_price = get_market_price(sp["coin"])
+        # 计算盈亏（优先使用实际成交价，回退到市场价）
         entry = sp["entry_price"]
+        fills = get_recent_fills(limit=1)
+        if fills and fills[0].get("coin") == sp["coin"]:
+            current_price = float(fills[0]["price"])
+        else:
+            current_price = get_market_price(sp["coin"])
         if sp["direction"] == "LONG":
             pnl_pct = (current_price - entry) / entry * 100
         else:

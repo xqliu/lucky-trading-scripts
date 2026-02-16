@@ -210,8 +210,9 @@ class TestExistingPositionBranches:
                 with patch('luckytrader.execute.save_state'):
                     with patch('luckytrader.execute.record_trade_result'):
                         with patch('luckytrader.execute.log_trade'):
-                            result = execute()
-        
+                            with patch('luckytrader.execute.get_recent_fills', return_value=[]):
+                                result = execute()
+
         assert result["action"] == "CLOSED_BY_TRIGGER"
         assert result["reason"] == "SL"
     
