@@ -836,9 +836,10 @@ class WSMonitor:
         await self.ws_manager.heartbeat_monitor()
 
     async def _periodic_report(self):
-        """30分钟定时报告——复用 signal.format_report()，原样转发
+        """1小时定时报告——复用 signal.format_report()，原样转发
 
-        首次立即发送报告，之后每 30 分钟发送一次。
+        首次立即发送报告，之后每 1 小时发送一次。
+        交易通知（开仓/平仓/SL/TP触发）则实时发送，不受此间隔影响。
         """
         while self.running:
             try:
@@ -859,7 +860,7 @@ class WSMonitor:
 
                     self.notification_manager._send_discord_message(report, force=True)
 
-                await asyncio.sleep(30 * 60)  # 报告后再睡眠
+                await asyncio.sleep(60 * 60)  # 1小时后再发下次报告
 
             except asyncio.CancelledError:
                 break
