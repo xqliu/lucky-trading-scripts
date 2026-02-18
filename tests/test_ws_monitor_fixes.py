@@ -399,3 +399,127 @@ class TestSignalOnCandleClose:
             sp.process_signal()
 
         assert analyze_calls == 0, f"analyze() should not run on first candle (no close yet)"
+
+
+# === Bug: has_position() sync blocking in async context ===
+
+class TestHasPositionAsync:
+    """has_position() calls in async methods must use asyncio.to_thread."""
+
+    @pytest.mark.asyncio
+    async def test_execute_signal_has_position_runs_in_thread(self):
+        """execute_signal's has_position check must not block the event loop."""
+        from luckytrader.ws_monitor import TradeExecutor
+
+        executor = TradeExecutor()
+        to_thread_calls = []
+
+        original_to_thread = asyncio.to_thread
+
+        async def tracking_to_thread(func, *args, **kwargs):
+            to_thread_calls.append(func.__name__ if hasattr(func, '__name__') else str(func))
+            # has_position → True → skip signal (early return)
+            if hasattr(func, '__name__') and func.__name__ == 'has_position':
+                return True
+            return func(*args, **kwargs)
+
+        with patch('asyncio.to_thread', side_effect=tracking_to_thread):
+            result = await executor.execute_signal({"signal": "LONG", "price": 67000})
+
+        assert 'has_position' in to_thread_calls, \
+            f"has_position must be called via asyncio.to_thread, but to_thread calls were: {to_thread_calls}"
+        assert result["action"] == "SKIP"
+
+    @pytest.mark.asyncio
+    async def test_trailing_loop_has_position_runs_in_thread(self):
+        """_trailing_loop's has_position check must not block the event loop."""
+        from luckytrader.ws_monitor import TradeExecutor
+
+        executor = TradeExecutor()
+        to_thread_calls = []
+
+        async def tracking_to_thread(func, *args, **kwargs):
+            to_thread_calls.append(func.__name__ if hasattr(func, '__name__') else str(func))
+            # has_position → False → loop exits
+            if hasattr(func, '__name__') and func.__name__ == 'has_position':
+                return False
+            return None
+
+        with patch('asyncio.to_thread', side_effect=tracking_to_thread):
+            await executor._trailing_loop()
+
+        assert 'has_position' in to_thread_calls, \
+            f"has_position must be called via asyncio.to_thread, but to_thread calls were: {to_thread_calls}"
+
+
+# === Bug: notify_* sync subprocess in async _message_loop ===
+
+class TestNotifyAsync:
+    """Notification calls from async _message_loop must not block the event loop."""
+
+    @pytest.mark.asyncio
+    async def test_notify_trade_closed_runs_in_thread(self):
+        """notify_trade_closed called from async context must use asyncio.to_thread."""
+        from luckytrader.ws_monitor import NotificationManager
+
+        nm = NotificationManager()
+        sent_in_thread = []
+
+        nm._send_discord_message = MagicMock()  # prevent actual subprocess
+
+        original_to_thread = asyncio.to_thread
+
+        async def tracking_to_thread(func, *args, **kwargs):
+            sent_in_thread.append(func.__name__ if hasattr(func, '__name__') else str(func))
+            return func(*args, **kwargs)
+
+        close_info = {
+            "direction": "LONG", "coin": "BTC", "reason": "TP",
+            "entry_price": 67000, "close_price": 71500, "pnl_pct": 6.72
+        }
+
+        with patch('asyncio.to_thread', side_effect=tracking_to_thread):
+            await nm.async_notify_trade_closed(close_info)
+
+        assert 'notify_trade_closed' in sent_in_thread, \
+            "notify_trade_closed must be called via asyncio.to_thread from async context"
+
+    @pytest.mark.asyncio
+    async def test_notify_signal_detected_runs_in_thread(self):
+        """notify_signal_detected called from async context must use asyncio.to_thread."""
+        from luckytrader.ws_monitor import NotificationManager
+
+        nm = NotificationManager()
+        sent_in_thread = []
+
+        nm._send_discord_message = MagicMock()
+
+        async def tracking_to_thread(func, *args, **kwargs):
+            sent_in_thread.append(func.__name__ if hasattr(func, '__name__') else str(func))
+            return func(*args, **kwargs)
+
+        signal_info = {"signal": "SHORT", "price": 67000, "signal_reasons": ["test"]}
+
+        with patch('asyncio.to_thread', side_effect=tracking_to_thread):
+            await nm.async_notify_signal_detected(signal_info)
+
+        assert 'notify_signal_detected' in sent_in_thread
+
+    @pytest.mark.asyncio
+    async def test_notify_error_runs_in_thread(self):
+        """notify_error called from async context must use asyncio.to_thread."""
+        from luckytrader.ws_monitor import NotificationManager
+
+        nm = NotificationManager()
+        sent_in_thread = []
+
+        nm._send_discord_message = MagicMock()
+
+        async def tracking_to_thread(func, *args, **kwargs):
+            sent_in_thread.append(func.__name__ if hasattr(func, '__name__') else str(func))
+            return func(*args, **kwargs)
+
+        with patch('asyncio.to_thread', side_effect=tracking_to_thread):
+            await nm.async_notify_error("test error", critical=True)
+
+        assert 'notify_error' in sent_in_thread

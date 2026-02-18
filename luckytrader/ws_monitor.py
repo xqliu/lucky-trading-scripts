@@ -366,8 +366,8 @@ class TradeExecutor:
     async def execute_signal(self, signal_result: Dict) -> Dict:
         """执行交易信号——直接开仓，不重新分析（async，不阻塞事件循环）"""
         try:
-            # 检查当前是否有持仓
-            if self.has_position():
+            # 检查当前是否有持仓（async，避免阻塞事件循环）
+            if await asyncio.to_thread(self.has_position):
                 logger.info("Already has position, skipping signal")
                 return {"action": "SKIP", "reason": "has_position"}
 
@@ -495,7 +495,7 @@ class TradeExecutor:
         """移动止损循环"""
         while True:
             try:
-                if not self.has_position():
+                if not await asyncio.to_thread(self.has_position):
                     logger.info("No position found, stopping trailing monitor")
                     break
 
@@ -596,6 +596,17 @@ class NotificationManager:
         # 记录新通知
         self.notification_history.append((now, notification_type, message))
         return True
+
+    # --- Async wrappers（从 async _message_loop 调用，避免 subprocess.run 阻塞事件循环）---
+
+    async def async_notify_trade_closed(self, close_info: Dict):
+        await asyncio.to_thread(self.notify_trade_closed, close_info)
+
+    async def async_notify_signal_detected(self, signal_info: Dict):
+        await asyncio.to_thread(self.notify_signal_detected, signal_info)
+
+    async def async_notify_error(self, error_message: str, critical: bool = False):
+        await asyncio.to_thread(self.notify_error, error_message, critical)
 
     def _send_discord_message(self, message: str, force: bool = False):
         """发送Discord消息"""
@@ -812,7 +823,7 @@ class WSMonitor:
                         trigger_result = await self.trade_executor.check_position_closed_by_trigger()
                         if trigger_result:
                             logger.info(f"SL/TP triggered: {trigger_result['reason']}, PnL {trigger_result['pnl_pct']:+.2f}%")
-                            self.notification_manager.notify_trade_closed(trigger_result)
+                            await self.notification_manager.async_notify_trade_closed(trigger_result)
 
                         # 信号检测
                         signal_result = self.signal_processor.process_signal()
@@ -820,7 +831,7 @@ class WSMonitor:
                         if signal_result and signal_result.get("signal") != "HOLD":
                             # 发现交易信号
                             logger.info(f"Signal detected: {signal_result['signal']}")
-                            self.notification_manager.notify_signal_detected(signal_result)
+                            await self.notification_manager.async_notify_signal_detected(signal_result)
 
                             # 执行交易（async）
                             trade_result = await self.trade_executor.execute_signal(signal_result)
@@ -830,7 +841,7 @@ class WSMonitor:
                                 self.state_manager.update_trading_status(signal_result["signal"])
                             elif trade_result.get("action") == "ERROR":
                                 # execute_signal 的 try/except 异常，execute.py 内部可能未通知
-                                self.notification_manager.notify_error(
+                                await self.notification_manager.async_notify_error(
                                     f"Trade execution failed: {trade_result.get('error')}",
                                     critical=True)
 
@@ -861,11 +872,11 @@ class WSMonitor:
 
         elif "API" in str(error) or "timeout" in str(error).lower():
             # API相关错误
-            self.notification_manager.notify_error(f"API Error: {error}")
+            await self.notification_manager.async_notify_error(f"API Error: {error}")
 
         else:
             # 其他错误
-            self.notification_manager.notify_error(f"System Error: {error}")
+            await self.notification_manager.async_notify_error(f"System Error: {error}")
 
     def stop(self):
         """停止监控"""
