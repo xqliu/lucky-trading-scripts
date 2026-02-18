@@ -7,7 +7,7 @@ Lucky Trading Signal System v5.1
 - 入场：突破24h区间 + 放量确认（可配置窗口）
 - 止损：4%
 - 止盈：7%
-- 持仓上限：72h
+- 持仓上限：60h
 """
 from hyperliquid.info import Info
 import time
