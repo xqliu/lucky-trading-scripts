@@ -108,8 +108,12 @@ def trigger_optimization():
 
 def load_state():
     if STATE_FILE.exists():
-        with open(STATE_FILE) as f:
-            return json.load(f)
+        try:
+            with open(STATE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            print(f"⚠️ position_state.json 损坏，重置为空状态")
+            return {"position": None}
     return {"position": None}
 
 def save_state(state):

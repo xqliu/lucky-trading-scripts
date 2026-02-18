@@ -3,6 +3,7 @@
 每笔交易独立计算收益率，允许同时多仓
 """
 from luckytrader.signal import get_candles, ema, rsi
+from luckytrader.config import get_config
 
 def simulate_trade(direction, entry, entry_idx, highs, lows, closes, stop_pct, tp_pct, max_hold):
     if direction == 'LONG':
@@ -33,34 +34,38 @@ def simulate_trade(direction, entry, entry_idx, highs, lows, closes, stop_pct, t
     return {'dir': direction, 'pnl_pct': pnl, 'bars': exit_idx - entry_idx, 'reason': 'TIMEOUT'}
 
 def run_strategy_b(candles, stop_pct, tp_pct, max_hold, vol_thresh=1.25):
+    _cfg = get_config()
+    range_bars = _cfg.strategy.range_bars
+    lookback_bars = _cfg.strategy.lookback_bars
+
     closes = [float(c['c']) for c in candles]
     opens = [float(c['o']) for c in candles]
     highs = [float(c['h']) for c in candles]
     lows = [float(c['l']) for c in candles]
     volumes = [float(c['v']) * float(c['c']) for c in candles]
-    
-    LOOKBACK = 48
+
+    start = max(range_bars, lookback_bars) + 1
     trades = []
-    
-    for i in range(LOOKBACK + 1, len(candles) - 1):  # -1: need next candle for entry
-        h24 = max(highs[i-LOOKBACK:i])
-        l24 = min(lows[i-LOOKBACK:i])
-        avg_vol = sum(volumes[i-LOOKBACK:i]) / LOOKBACK
+
+    for i in range(start, len(candles) - 1):  # -1: need next candle for entry
+        h_range = max(highs[i-range_bars:i])
+        l_range = min(lows[i-range_bars:i])
+        avg_vol = sum(volumes[i-lookback_bars:i]) / lookback_bars
         vol_ratio = volumes[i] / avg_vol if avg_vol > 0 else 0
-        
+
         signal = None
-        if closes[i] > h24 and vol_ratio > vol_thresh:
+        if highs[i] > h_range and vol_ratio > vol_thresh:
             signal = 'LONG'
-        elif closes[i] < l24 and vol_ratio > vol_thresh:
+        elif lows[i] < l_range and vol_ratio > vol_thresh:
             signal = 'SHORT'
-        
+
         if signal:
             # 入场用下一根K线的开盘价（实盘中看到信号后才能下单）
             entry_price = opens[i + 1]
             trade = simulate_trade(signal, entry_price, i + 1, highs, lows, closes, stop_pct, tp_pct, max_hold)
             if trade:
                 trades.append(trade)
-    
+
     return trades
 
 def print_stats(label, trades):
@@ -101,25 +106,28 @@ def main():
     
     print("\n--- 不同放量倍数 (SL3.5%, TP4%, 24h) ---")
     # need custom for vol threshold
+    _cfg = get_config()
+    range_bars = _cfg.strategy.range_bars
+    lookback_bars = _cfg.strategy.lookback_bars
     closes = [float(c['c']) for c in candles]
     opens = [float(c['o']) for c in candles]
     highs = [float(c['h']) for c in candles]
     lows = [float(c['l']) for c in candles]
     volumes = [float(c['v']) * float(c['c']) for c in candles]
-    LOOKBACK = 48
-    
+    start = max(range_bars, lookback_bars) + 1
+
     for vol_thresh in [1.5, 2.0, 2.5, 3.0]:
         trades = []
-        for i in range(LOOKBACK + 1, len(candles) - 1):
-            h24 = max(highs[i-LOOKBACK:i])
-            l24 = min(lows[i-LOOKBACK:i])
-            avg_vol = sum(volumes[i-LOOKBACK:i]) / LOOKBACK
+        for i in range(start, len(candles) - 1):
+            h_range = max(highs[i-range_bars:i])
+            l_range = min(lows[i-range_bars:i])
+            avg_vol = sum(volumes[i-lookback_bars:i]) / lookback_bars
             vr = volumes[i] / avg_vol if avg_vol > 0 else 0
-            
+
             sig = None
-            if closes[i] > h24 and vr > vol_thresh: sig = 'LONG'
-            elif closes[i] < l24 and vr > vol_thresh: sig = 'SHORT'
-            
+            if highs[i] > h_range and vr > vol_thresh: sig = 'LONG'
+            elif lows[i] < l_range and vr > vol_thresh: sig = 'SHORT'
+
             if sig:
                 entry_price = opens[i + 1]
                 t = simulate_trade(sig, entry_price, i + 1, highs, lows, closes, 0.035, 0.04, 48)

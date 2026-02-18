@@ -39,15 +39,21 @@ STATE_FILE = get_workspace_dir() / "memory/trading/trailing_state.json"
 def load_state():
     """加载持仓状态"""
     if STATE_FILE.exists():
-        with open(STATE_FILE) as f:
-            return json.load(f)
+        try:
+            with open(STATE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            print(f"⚠️ trailing_state.json 损坏，重置为空状态")
+            return {}
     return {}
 
 def save_state(state):
-    """保存持仓状态"""
+    """保存持仓状态（原子写入，防止 crash 损坏文件）"""
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(STATE_FILE, "w") as f:
+    tmp = STATE_FILE.with_suffix(".tmp")
+    with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
+    os.replace(tmp, STATE_FILE)
 
 def get_positions():
     """获取当前持仓"""
@@ -287,14 +293,12 @@ def main():
             alerts.append(f"❌ {coin}: Stop order failed to set!")
         elif result["action"] == "no_change":
             print(f"   ✓ Stop unchanged @ ${result['current_stop']:,.2f}")
-        else:
-            print(f"   ⏳ Trailing inactive (need {result['activation_threshold']:.0f}% gain, have {result['gain_pct']:.1f}%)")
         
         state[coin] = state.get(coin, {})
         state[coin].update({
             "entry_price": pos["entry_price"],
             "high_water_mark": result.get("high_water_mark", pos["entry_price"]),
-            "trailing_active": result["action"] not in ["inactive", "error"],
+            "trailing_active": result.get("trailing_active", False),
             "last_check": datetime.now().isoformat(),
             "has_stop": existing_stop is not None or result["action"] == "updated"
         })
