@@ -79,15 +79,29 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
     closes = [float(c['c']) for c in candles]
     volumes = [float(c['v']) * float(c['c']) for c in candles]
     
-    # 技术指标（用更多数据算 EMA 准确）
+    # 布林带（用更多数据让前几根也准确）
     all_candles = get_candles_raw(coin, '30m', 80)
     all_closes = [float(c['c']) for c in all_candles]
-    ema8_full = ema(all_closes, 8)
-    ema21_full = ema(all_closes, 21)
+    bb_period = 20
+    bb_std = 2.0
+    bb_mid_full, bb_upper_full, bb_lower_full = [], [], []
+    for i in range(len(all_closes)):
+        if i < bb_period - 1:
+            bb_mid_full.append(all_closes[i])
+            bb_upper_full.append(all_closes[i])
+            bb_lower_full.append(all_closes[i])
+        else:
+            window = all_closes[i - bb_period + 1:i + 1]
+            mid = sum(window) / bb_period
+            std = (sum((x - mid) ** 2 for x in window) / bb_period) ** 0.5
+            bb_mid_full.append(mid)
+            bb_upper_full.append(mid + bb_std * std)
+            bb_lower_full.append(mid - bb_std * std)
     # 对齐到最后 48 根
     offset = len(all_candles) - len(candles)
-    ema8 = ema8_full[offset:]
-    ema21 = ema21_full[offset:]
+    bb_mid = bb_mid_full[offset:]
+    bb_upper = bb_upper_full[offset:]
+    bb_lower = bb_lower_full[offset:]
     
     # 获取支撑阻力（如果没传入 signal_result）
     supports = []
@@ -114,7 +128,7 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
             pass
     
     # ====== 绘图 ======
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5.5),
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8),
                                      gridspec_kw={'height_ratios': [3.5, 1]},
                                      facecolor=BG_COLOR)
     fig.subplots_adjust(hspace=0.08, left=0.08, right=0.95, top=0.92, bottom=0.08)
@@ -140,9 +154,13 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
         ax1.bar(times[i], body_low - lows[i], width=thin_width,
                 bottom=lows[i], color=color, linewidth=0)
     
-    # EMA
-    ax1.plot(times, ema8, color=EMA8_COLOR, linewidth=1, alpha=0.8, label='EMA8')
-    ax1.plot(times, ema21, color=EMA21_COLOR, linewidth=1, alpha=0.8, label='EMA21')
+    # 布林带
+    BB_MID_COLOR = '#ffd700'
+    BB_BAND_COLOR = '#87ceeb'
+    ax1.plot(times, bb_mid, color=BB_MID_COLOR, linewidth=1, alpha=0.8, label='BB Mid')
+    ax1.plot(times, bb_upper, color=BB_BAND_COLOR, linewidth=0.8, alpha=0.6, label='BB Upper')
+    ax1.plot(times, bb_lower, color=BB_BAND_COLOR, linewidth=0.8, alpha=0.6, label='BB Lower')
+    ax1.fill_between(times, bb_lower, bb_upper, color=BB_BAND_COLOR, alpha=0.08)
     
     # 支撑阻力位（只画前2个最强的）
     price_min = min(lows)
