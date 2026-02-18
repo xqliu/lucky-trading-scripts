@@ -234,8 +234,8 @@ class SignalProcessor:
         self.signal_history = []  # [(timestamp, signal), ...]
         self.duplicate_window = 600  # 10分钟去重窗口
         self.last_price = None
-        self._last_signal_check = 0
-        self._signal_check_interval = 30  # 最少 30 秒调一次 analyze()（REST API 节流）
+        self._current_candle_time = 0  # 当前 K 线时间戳
+        self._candle_closed = False  # 是否检测到新 K 线（即上一根收盘）
 
     def add_kline(self, kline_data: Dict):
         """添加K线数据到缓存"""
@@ -257,6 +257,12 @@ class SignalProcessor:
 
         self.kline_cache.append(kline)
         self.last_price = kline.close
+
+        # 检测 K 线收盘：时间戳变化 = 新 K 线开始 = 上一根收盘
+        if self._current_candle_time and kline.time != self._current_candle_time:
+            self._candle_closed = True
+            logger.info(f"Candle closed, new candle at {kline.time}")
+        self._current_candle_time = kline.time
 
         logger.debug(f"Added kline: {kline.coin} ${kline.close:,.2f} vol={kline.volume:.3f}")
         return True
@@ -291,15 +297,12 @@ class SignalProcessor:
     def process_signal(self) -> Optional[Dict]:
         """处理信号检测
 
-        注意：analyze() 通过 REST API 独立获取历史 K 线数据，
-        不依赖 WS kline_cache。WS 只是触发时机，不提供数据。
-
-        节流：最少 30 秒调一次 REST API，避免被限流。
+        只在 30m K 线收盘时调用 analyze()（时间戳变化 = 新 K 线开始 = 上一根收盘）。
+        与回测一致：信号基于已收盘 K 线，入场用 next-open。
         """
-        now = time.time()
-        if now - self._last_signal_check < self._signal_check_interval:
+        if not self._candle_closed:
             return None
-        self._last_signal_check = now
+        self._candle_closed = False
 
         try:
             # 调用现有signal.analyze()函数
@@ -756,7 +759,7 @@ class WSMonitor:
         self.tasks = [
             asyncio.create_task(self._message_loop()),
             asyncio.create_task(self._heartbeat_monitor()),
-            asyncio.create_task(self._periodic_report()),
+            # 定时报告由 OpenClaw cron "市场报告 (30min)" 负责，ws_monitor 只发交易通知
         ]
 
         # 更新状态
@@ -839,39 +842,6 @@ class WSMonitor:
     async def _heartbeat_monitor(self):
         """心跳监控任务"""
         await self.ws_manager.heartbeat_monitor()
-
-    async def _periodic_report(self):
-        """1小时定时报告——复用 signal.format_report()，原样转发
-
-        首次立即发送报告，之后每 1 小时发送一次。
-        交易通知（开仓/平仓/SL/TP触发）则实时发送，不受此间隔影响。
-        """
-        while self.running:
-            try:
-                # 复用现有 format_report()，保持和 cron 报告一致
-                result = analyze("BTC")
-                if "error" not in result:
-                    report = format_report(result)
-
-                    # 追加账户状态
-                    try:
-                        position = execute.get_position("BTC")
-                        account = execute.get_account_info()
-                        balance = float(account.get("account_value", 0))
-                        pos_str = "无持仓" if not position else f"{position['direction']} {abs(position['size'])} BTC"
-                        report += f"\n\n💼 账户: ${balance:.2f} | {pos_str}"
-                    except Exception:
-                        pass
-
-                    self.notification_manager._send_discord_message(report, force=True)
-
-                await asyncio.sleep(60 * 60)  # 1小时后再发下次报告
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Periodic report error: {e}")
-                await asyncio.sleep(60)  # 出错后短暂等待再重试
 
     async def handle_error(self, error: Exception):
         """错误处理"""

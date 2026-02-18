@@ -488,7 +488,8 @@ class TestClosePositionChecksResult:
             "entry_price": 67000.0,
         }
 
-        with patch('luckytrader.execute.save_state') as mock_save:
+        with patch('luckytrader.execute.save_state') as mock_save, \
+             patch('luckytrader.execute.get_position', return_value={"coin": "BTC", "size": 0.001, "direction": "LONG"}):
             with pytest.raises(RuntimeError, match="平仓失败"):
                 close_position(position)
             # save_state should NOT have been called with position=None
@@ -511,7 +512,11 @@ class TestClosePositionChecksResult:
             "entry_price": 67000.0,
         }
 
-        with patch('luckytrader.execute.save_state') as mock_save:
-            close_position(position)
+        with patch('luckytrader.execute.save_state') as mock_save, \
+             patch('luckytrader.execute.get_position', return_value={"coin": "BTC", "size": 0.001, "direction": "LONG"}):
+            result = close_position(position)
+            assert result is True, "Successful close should return True"
             mock_save.assert_called_once()
             assert mock_save.call_args[0][0]["position"] is None
+            mock_hl.place_market_order.assert_called_once()
+            mock_log.assert_called_once()

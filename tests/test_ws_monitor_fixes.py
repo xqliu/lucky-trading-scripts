@@ -257,45 +257,7 @@ class TestSignalHandlerThreadSafety:
         mock_loop.call_soon_threadsafe.assert_called()
 
 
-# === Fix 7: Periodic report fires immediately ===
-
-class TestPeriodicReportImmediate:
-    """First periodic report should fire immediately, not after 30min."""
-
-    @pytest.mark.asyncio
-    async def test_periodic_report_sends_immediately(self):
-        """_periodic_report should send a report before sleeping."""
-        from luckytrader.ws_monitor import WSMonitor
-
-        monitor = WSMonitor()
-        monitor.running = True
-        report_sent = False
-
-        original_send = monitor.notification_manager._send_discord_message
-
-        def mock_send(msg, force=False):
-            nonlocal report_sent
-            report_sent = True
-            # Stop after first report
-            monitor.running = False
-
-        with patch('luckytrader.ws_monitor.analyze', return_value={"signal": "HOLD", "price": 67000}), \
-             patch('luckytrader.ws_monitor.format_report', return_value="Test report"), \
-             patch('luckytrader.execute.get_position', return_value=None), \
-             patch('luckytrader.execute.get_account_info', return_value={"account_value": "200"}), \
-             patch.object(monitor.notification_manager, '_send_discord_message', side_effect=mock_send):
-
-            # Run periodic report — should send immediately (before any sleep)
-            task = asyncio.create_task(monitor._periodic_report())
-            await asyncio.sleep(0.1)  # Give it time to run
-            if not task.done():
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-
-            assert report_sent, "Report should be sent immediately on startup, not delayed 30 minutes"
+# === Fix 7: Periodic report removed — reporting handled by OpenClaw cron ===
 
 
 # === Fix 9: Module-level config load ===
@@ -361,3 +323,79 @@ class TestCriticalAlertsBypassDedup:
 
         # Only first should be sent — dedup works for non-critical
         assert len(sent_messages) == 1
+
+
+# === Signal check only on candle close ===
+
+class TestSignalOnCandleClose:
+    """analyze() should only be called when a new 30m candle closes, not every 30s."""
+
+    def test_same_candle_does_not_trigger_analyze(self):
+        """Multiple kline updates with the same timestamp should NOT call analyze()."""
+        from luckytrader.ws_monitor import SignalProcessor
+
+        sp = SignalProcessor()
+        analyze_calls = 0
+        original_analyze = None
+
+        def mock_analyze(coin):
+            nonlocal analyze_calls
+            analyze_calls += 1
+            return {"signal": "HOLD", "signal_reasons": []}
+
+        with patch('luckytrader.ws_monitor.analyze', side_effect=mock_analyze):
+            # Add several klines with the same timestamp (same candle updating)
+            for i in range(5):
+                sp.add_kline({"coin": "BTC", "interval": "30m", "time": 1000000,
+                              "open": "97000", "high": "97500", "low": "96500",
+                              "close": str(97000 + i), "volume": "100"})
+                sp.process_signal()
+
+        assert analyze_calls == 0, f"analyze() called {analyze_calls} times on same candle, expected 0"
+
+    def test_new_candle_triggers_analyze(self):
+        """When candle timestamp changes, analyze() should be called (previous candle closed)."""
+        from luckytrader.ws_monitor import SignalProcessor
+
+        sp = SignalProcessor()
+        analyze_calls = 0
+
+        def mock_analyze(coin):
+            nonlocal analyze_calls
+            analyze_calls += 1
+            return {"signal": "HOLD", "signal_reasons": []}
+
+        with patch('luckytrader.ws_monitor.analyze', side_effect=mock_analyze):
+            # First candle
+            sp.add_kline({"coin": "BTC", "interval": "30m", "time": 1000000,
+                          "open": "97000", "high": "97500", "low": "96500",
+                          "close": "97200", "volume": "100"})
+            sp.process_signal()  # same candle, no analyze
+
+            # New candle (timestamp changed) → previous candle closed
+            sp.add_kline({"coin": "BTC", "interval": "30m", "time": 1001800000,
+                          "open": "97200", "high": "97300", "low": "97100",
+                          "close": "97250", "volume": "50"})
+            sp.process_signal()  # new candle → should trigger analyze
+
+        assert analyze_calls == 1, f"analyze() called {analyze_calls} times, expected 1"
+
+    def test_first_candle_does_not_trigger_analyze(self):
+        """The very first kline received should not trigger analyze (no previous candle to close)."""
+        from luckytrader.ws_monitor import SignalProcessor
+
+        sp = SignalProcessor()
+        analyze_calls = 0
+
+        def mock_analyze(coin):
+            nonlocal analyze_calls
+            analyze_calls += 1
+            return {"signal": "HOLD", "signal_reasons": []}
+
+        with patch('luckytrader.ws_monitor.analyze', side_effect=mock_analyze):
+            sp.add_kline({"coin": "BTC", "interval": "30m", "time": 1000000,
+                          "open": "97000", "high": "97500", "low": "96500",
+                          "close": "97200", "volume": "100"})
+            sp.process_signal()
+
+        assert analyze_calls == 0, f"analyze() should not run on first candle (no close yet)"

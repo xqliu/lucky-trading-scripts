@@ -249,6 +249,13 @@ def main():
     
     if not positions:
         print("📭 No open positions")
+        # 清理残留的 trailing state（防止与链上不一致）
+        state = load_state()
+        if state:
+            print("🧹 Cleaning stale trailing state")
+            from luckytrader.execute import notify_discord
+            notify_discord(f"⚠️ **State 不一致** — 链上无持仓但 trailing_state 有残留: {list(state.keys())}，已自动清理")
+            save_state({})
         return
     
     state = load_state()

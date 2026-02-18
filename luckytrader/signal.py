@@ -107,10 +107,12 @@ def analyze(coin='BTC'):
     result['price'] = current_price
     
     # Price range detection (configurable window)
-    if candles_30m and len(candles_30m) >= _range + 1:
-        range_slice = candles_30m[-(_range+1):-1]  # past N bars excluding current
+    # range_slice 必须排除突破判定用的 candles_30m[-2]，否则突破 K 线自身
+    # 定义了区间边界，导致 breakout_down/up 永远为 False
+    if candles_30m and len(candles_30m) >= _range + 2:
+        range_slice = candles_30m[-(_range+2):-2]  # N bars before the breakout candle
     else:
-        range_slice = candles_30m[:-1] if candles_30m and len(candles_30m) > 1 else candles_1h[-25:-1]
+        range_slice = candles_30m[:-2] if candles_30m and len(candles_30m) > 2 else candles_1h[-25:-1]
     
     high_range = max(float(c['h']) for c in range_slice)
     low_range = min(float(c['l']) for c in range_slice)
@@ -142,8 +144,10 @@ def analyze(coin='BTC'):
     
     # === 放量突破信号 ===
     # 用上一根已收盘的30m K线检测（避免未收盘K线成交量失真）
+    # 突破判定用 high/low（盘中突破即算），回测验证总收益+50%
     if candles_30m and len(candles_30m) >= 3:
-        latest_30m_close = float(candles_30m[-2]['c'])  # 上一根已收盘
+        latest_30m_high = float(candles_30m[-2]['h'])   # 上一根已收盘的最高价
+        latest_30m_low = float(candles_30m[-2]['l'])    # 上一根已收盘的最低价
         latest_30m_vol = float(candles_30m[-2]['v']) * float(candles_30m[-2]['c'])
         # Volume average over configurable lookback window
         vol_start = max(0, len(candles_30m) - 2 - _lookback)
@@ -151,7 +155,8 @@ def analyze(coin='BTC'):
         avg_30m_vol = sum(float(c['v']) * float(c['c']) for c in vol_slice) / len(vol_slice) if vol_slice else 0
         vol_ratio_30m = latest_30m_vol / avg_30m_vol if avg_30m_vol > 0 else 0
     else:
-        latest_30m_close = current_price
+        latest_30m_high = current_price
+        latest_30m_low = current_price
         latest_30m_vol = 0
         avg_30m_vol = 0
         vol_ratio_30m = 0
@@ -161,8 +166,8 @@ def analyze(coin='BTC'):
     result['avg_volume_24h'] = avg_30m_vol
     result['volume_ratio'] = vol_ratio_30m
     
-    breakout_up = latest_30m_close > high_range
-    breakout_down = latest_30m_close < low_range
+    breakout_up = latest_30m_high > high_range
+    breakout_down = latest_30m_low < low_range
     _cfg = get_config()
     vol_confirm = vol_ratio_30m > _cfg.strategy.vol_threshold
     

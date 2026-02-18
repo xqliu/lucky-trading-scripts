@@ -236,7 +236,11 @@ def execute(dry_run=False):
                     return {"action": "DRY_RUN_WOULD_TIMEOUT_CLOSE", "elapsed": elapsed, "pnl_pct": pnl_pct, "dry_run": True}
                 print(f"⏰ 超时平仓！已持仓 {elapsed:.1f}h")
                 try:
-                    close_position(position)
+                    result = close_position(position)
+                    if result is None:
+                        # close_position 发现链上无仓位（SL/TP 已触发），仍需记录交易结果
+                        record_trade_result(pnl_pct, position["direction"], position["coin"], "SL_TP_AUTO")
+                        return {"action": "STALE_STATE_CLEANED", "elapsed": elapsed}
                 except RuntimeError as e:
                     return {"action": "CLOSE_FAILED", "error": str(e)}
                 record_trade_result(pnl_pct, position["direction"], position["coin"], "TIMEOUT")
@@ -508,6 +512,17 @@ def close_position(position):
     size = abs(position["size"])
     is_long = position["direction"] == "LONG"
     
+    # 先验证链上是否真的有仓位（防止 state 与链上不一致）
+    real_pos = get_position(coin)
+    if not real_pos:
+        print(f"⚠️ 链上无 {coin} 持仓，state 残留。清理 state。")
+        save_state({"position": None})
+        notify_discord(f"ℹ️ {coin} 超时平仓跳过 — 链上已无仓位（可能 SL/TP 已触发）")
+        return
+    # 用链上真实数据覆盖，防止 size 不一致
+    size = abs(real_pos["size"])
+    is_long = real_pos["direction"] == "LONG"
+    
     # 先取消所有挂单
     try:
         orders = get_open_orders_detailed()
@@ -527,8 +542,9 @@ def close_position(position):
         raise RuntimeError(f"平仓失败: {coin} size={size} — {result}")
 
     save_state({"position": None})
-    log_trade("CLOSE", coin, position["direction"], size,
+    log_trade("CLOSE", coin, real_pos["direction"], size,
               get_market_price(coin), reason="超时平仓")
+    return True
 
 def check_sl_tp_orders(coin, position):
     """检查SL/TP订单是否存在"""

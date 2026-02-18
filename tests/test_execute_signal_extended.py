@@ -331,10 +331,11 @@ class TestClosePosition:
             {"coin": "BTC", "oid": 5002},
         ]
         
-        with patch('luckytrader.execute.save_state'):
-            with patch('luckytrader.execute.log_trade'):
-                close_position(position)
-        
+        with patch('luckytrader.execute.save_state'), \
+             patch('luckytrader.execute.log_trade'), \
+             patch('luckytrader.execute.get_position', return_value={"coin": "BTC", "size": 0.001, "direction": "LONG"}):
+            close_position(position)
+
         assert mock_hl.cancel_order.call_count == 2
         mock_hl.place_market_order.assert_called_once_with("BTC", False, 0.001)
 
