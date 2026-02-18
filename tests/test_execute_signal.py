@@ -338,6 +338,73 @@ class TestSlTpTriggerFillPrice:
             f"PnL {result['pnl_pct']:.2f}% should be {expected_pnl:.2f}% (fill price)"
 
     @patch('luckytrader.execute.notify_discord')
+    def test_sl_tp_trigger_ignores_wrong_side_fill(self, mock_notify, mock_hl):
+        """LONG position closed, but most recent fill is BUY (the OPEN, not the CLOSE).
+        Should fall back to market price, not use the open fill price.
+
+        Bug scenario: userFills returns the OPEN fill (BUY for LONG), code uses it
+        as close price → PnL ≈ 0% instead of actual PnL.
+        """
+        from luckytrader.execute import execute
+
+        state = {
+            "position": {
+                "coin": "BTC", "direction": "LONG", "size": 0.001,
+                "entry_price": 67000.0, "entry_time": datetime.now(timezone.utc).isoformat(),
+                "sl_price": 64320.0, "tp_price": 71690.0,
+            }
+        }
+
+        # Fill is BUY (same as OPEN direction for LONG) — this is NOT the close fill
+        wrong_side_fill = [{"coin": "BTC", "side": "BUY", "size": "0.001", "price": "67000", "time": 1234567890}]
+        mock_hl.get_market_price.return_value = 64000.0  # SL triggered, price dropped
+
+        with patch('luckytrader.execute.get_position', return_value=None), \
+             patch('luckytrader.execute.load_state', return_value=state), \
+             patch('luckytrader.execute.save_state'), \
+             patch('luckytrader.execute.record_trade_result') as mock_record, \
+             patch('luckytrader.execute.log_trade'), \
+             patch('luckytrader.execute.get_recent_fills', return_value=wrong_side_fill):
+            result = execute()
+
+        assert result["action"] == "CLOSED_BY_TRIGGER"
+        # Should use market price 64000 (fallback), NOT fill price 67000 (wrong side)
+        expected_pnl = (64000 - 67000) / 67000 * 100  # -4.48%
+        assert abs(result["pnl_pct"] - expected_pnl) < 0.01, \
+            f"PnL {result['pnl_pct']:.2f}% should be {expected_pnl:.2f}% (market fallback), not ~0% (wrong fill)"
+
+    @patch('luckytrader.execute.notify_discord')
+    def test_sl_tp_trigger_short_uses_buy_fill(self, mock_notify, mock_hl):
+        """SHORT position closed by SL/TP, fill is BUY (correct close side for SHORT)."""
+        from luckytrader.execute import execute
+
+        state = {
+            "position": {
+                "coin": "BTC", "direction": "SHORT", "size": 0.001,
+                "entry_price": 67000.0, "entry_time": datetime.now(timezone.utc).isoformat(),
+                "sl_price": 69680.0, "tp_price": 62310.0,
+            }
+        }
+
+        # BUY fill = correct close side for SHORT
+        fill_data = [{"coin": "BTC", "side": "BUY", "size": "0.001", "price": "62500", "time": 1234567890}]
+        mock_hl.get_market_price.return_value = 62000.0
+
+        with patch('luckytrader.execute.get_position', return_value=None), \
+             patch('luckytrader.execute.load_state', return_value=state), \
+             patch('luckytrader.execute.save_state'), \
+             patch('luckytrader.execute.record_trade_result'), \
+             patch('luckytrader.execute.log_trade'), \
+             patch('luckytrader.execute.get_recent_fills', return_value=fill_data):
+            result = execute()
+
+        assert result["action"] == "CLOSED_BY_TRIGGER"
+        # Should use fill price 62500, not market 62000
+        expected_pnl = (67000 - 62500) / 67000 * 100  # 6.72%
+        assert abs(result["pnl_pct"] - expected_pnl) < 0.01, \
+            f"PnL should use fill price 62500, got {result['pnl_pct']:.2f}%"
+
+    @patch('luckytrader.execute.notify_discord')
     def test_sl_tp_trigger_falls_back_to_market_price(self, mock_notify, mock_hl):
         """When no fills available, fall back to market price."""
         from luckytrader.execute import execute

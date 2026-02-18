@@ -426,13 +426,18 @@ class TradeExecutor:
             sp = state["position"]
             logger.warning(f"Position closed by trigger: {sp['direction']} {sp['coin']}")
 
-            # 尝试获取实际成交价格（优先使用 fill price）
+            # 尝试获取实际平仓成交价（验证 fill side 匹配平仓方向）
             entry = sp["entry_price"]
-            fills = await asyncio.to_thread(get_recent_fills, 1)
-            if fills and fills[0].get("coin") == sp["coin"]:
-                close_price = float(fills[0]["price"])
+            expected_close_side = "SELL" if sp["direction"] == "LONG" else "BUY"
+            fills = await asyncio.to_thread(get_recent_fills, 5)
+            close_fill = next(
+                (f for f in fills if f.get("coin") == sp["coin"] and f.get("side") == expected_close_side),
+                None
+            )
+            if close_fill:
+                close_price = float(close_fill["price"])
             else:
-                # 无 fill 数据，回退到市场价
+                # 无匹配 fill，回退到市场价
                 close_price = await asyncio.to_thread(get_market_price, sp["coin"])
 
             if sp["direction"] == "LONG":

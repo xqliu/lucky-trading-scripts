@@ -193,11 +193,16 @@ def execute(dry_run=False):
     if not position and state.get("position"):
         sp = state["position"]
         print(f"⚡ 持仓已被平仓（SL/TP触发）: {sp['direction']} {sp['coin']}")
-        # 计算盈亏（优先使用实际成交价，回退到市场价）
+        # 计算盈亏（优先使用实际平仓成交价，回退到市场价）
         entry = sp["entry_price"]
-        fills = get_recent_fills(limit=1)
-        if fills and fills[0].get("coin") == sp["coin"]:
-            current_price = float(fills[0]["price"])
+        expected_close_side = "SELL" if sp["direction"] == "LONG" else "BUY"
+        fills = get_recent_fills(limit=5)
+        close_fill = next(
+            (f for f in fills if f.get("coin") == sp["coin"] and f.get("side") == expected_close_side),
+            None
+        )
+        if close_fill:
+            current_price = float(close_fill["price"])
         else:
             current_price = get_market_price(sp["coin"])
         if sp["direction"] == "LONG":
