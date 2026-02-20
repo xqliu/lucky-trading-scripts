@@ -192,6 +192,7 @@ class WebSocketManager:
             return None
         except Exception as e:
             logger.error(f"Error receiving message: {e}")
+            self.connected = False  # 任何异常都标记为断线，防止无限循环
             return None
 
     async def heartbeat_monitor(self):
@@ -803,6 +804,7 @@ class WSMonitor:
                     # 超时或连接问题
                     if not self.ws_manager.connected:
                         logger.warning("WebSocket disconnected, attempting reconnect...")
+                        await asyncio.sleep(2)  # 退避，防止断线时无限循环刷错误日志
                         if await self.ws_manager.reconnect_with_lock():
                             await self.ws_manager.subscribe_klines("BTC")
                     continue
