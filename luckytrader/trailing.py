@@ -92,6 +92,11 @@ def get_current_stop_order(coin: str, is_long: bool):
         side = order.get("side")
         order_type = order.get("orderType", "")
         
+        # 必须是止损单，不匹配止盈单
+        # Stop Market = 止损; Take Profit Market = 止盈（不应被当作止损）
+        if "Take Profit" in order_type:
+            continue
+        
         # 多头止损：触发卖单 (side=A)
         # 空头止损：触发买单 (side=B)
         if is_long and side == "A":
