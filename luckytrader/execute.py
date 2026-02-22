@@ -576,6 +576,9 @@ def close_position(position, max_retries=3, backoff_seconds=5):
         max_retries: 失败后最多重试次数（总尝试 = 1 + max_retries）
         backoff_seconds: 首次重试等待秒数，后续指数增长（0 = 不等待，用于测试）
     """
+    import traceback as _tb
+    print(f"[DEBUG] close_position() called at {datetime.now(timezone.utc).isoformat()}, position={position.get('coin')} {position.get('direction')}")
+    print(f"[DEBUG] Caller stack:\n{''.join(_tb.format_stack()[:-1])}")
     coin = position["coin"]
     
     # 先验证链上是否真的有仓位（防止 state 与链上不一致）
