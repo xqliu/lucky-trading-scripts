@@ -99,3 +99,16 @@ def mock_hl():
     _fake_hl.place_take_profit.return_value = {"status": "ok"}
     _fake_hl.cancel_order.return_value = {"status": "ok"}
     return _fake_hl
+
+
+@pytest.fixture(autouse=True)
+def _block_real_side_effects():
+    """Global safety net: 全局禁止测试中的真实副作用。
+
+    notify_discord 和 trigger_optimization 都调用 subprocess.run(['openclaw', ...])，
+    会发送真实的 Discord 消息或触发真实的系统事件。
+    测试中必须阻止这些调用，无论单个测试是否有局部 @patch。
+    """
+    with patch('luckytrader.execute.notify_discord') as _mock_nd, \
+         patch('luckytrader.execute.trigger_optimization') as _mock_to:
+        yield {"notify_discord": _mock_nd, "trigger_optimization": _mock_to}
