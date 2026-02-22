@@ -132,7 +132,7 @@ def check_and_update_trailing_stop(coin: str, position: dict, state: dict):
         "last_stop_price": None
     })
     
-    high_water_mark = pos_state.get("high_water_mark", entry_price)
+    high_water_mark = pos_state.get("high_water_mark") or entry_price
     trailing_active = pos_state.get("trailing_active", False)
     
     # 更新最高价（多头）或最低价（空头）
