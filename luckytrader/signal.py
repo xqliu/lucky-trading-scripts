@@ -89,7 +89,10 @@ def analyze(coin='BTC'):
     _cfg_strategy = get_config().strategy
     _lookback = _cfg_strategy.lookback_bars
     _range = _cfg_strategy.range_bars
-    candles_30m = get_candles(coin, '30m', max(48, _range + 2))
+    # 30m K线：至少需要 (_range + 2) 根bar，每根30m = 0.5h
+    # 请求 (_range + 2) / 2 + 24h 额外余量，确保有足够数据
+    _30m_hours_needed = (_range + 2) // 2 + 24
+    candles_30m = get_candles(coin, '30m', max(48, _30m_hours_needed))
     
     if not candles_1h or len(candles_1h) < 50:
         return {"error": "数据不足"}
@@ -179,7 +182,8 @@ def analyze(coin='BTC'):
     }
     
     # 4h 趋势方向过滤（顺势交易，回测验证：期望提升22-38%）
-    candles_4h = get_candles(coin, '4h', 21 * 4)  # 最近21根4h K线
+    # 请求 42 根 4h K线（168h）：EMA21需21根，2倍余量防止API少返回数据导致UNKNOWN
+    candles_4h = get_candles(coin, '4h', 42 * 4)
     trend_4h = 'UNKNOWN'
     if candles_4h and len(candles_4h) >= 21:
         closes_4h = [float(c['c']) for c in candles_4h]
