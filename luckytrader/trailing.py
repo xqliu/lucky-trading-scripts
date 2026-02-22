@@ -256,11 +256,21 @@ def main():
     print(f"🔄 Trailing Stop Check - {datetime.now(_CST).strftime('%Y-%m-%d %H:%M:%S CST')}")
     print(f"{'='*50}\n")
     
-    positions = get_positions()
-    
+    try:
+        positions = get_positions()
+    except Exception as e:
+        print(f"⚠️ API 获取持仓失败，跳过本次检查: {e}")
+        return  # API down 时不清理 state，防止假阳性
+
     if not positions:
         print("📭 No open positions")
         # 清理残留的 trailing state（防止与链上不一致）
+        # 二次确认：对照 position_state.json，若本地记录有持仓则认为 API 可能误报，跳过清理
+        from luckytrader.execute import load_state as load_execute_state
+        execute_state = load_execute_state()
+        if execute_state.get("position"):
+            print("⚠️ API 返回无持仓，但 position_state.json 有记录，疑似 API 误报，跳过清理")
+            return
         state = load_state()
         if state:
             print("🧹 Cleaning stale trailing state")
