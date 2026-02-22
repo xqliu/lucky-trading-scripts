@@ -134,7 +134,9 @@ def get_regime_params(de, config) -> dict:
     )
 
     if de is None:
-        logger.warning("DE unavailable (API failure or insufficient data) — fail-open to range params")
+        msg = "⚠️ DE unavailable (API failure or insufficient data) — fail-open to range params"
+        logger.warning(msg)
+        print(msg)  # ensure visibility in journalctl even if logger has no handler
         return {
             'tp_pct': _RANGE_TP,
             'sl_pct': _RANGE_SL,
@@ -167,11 +169,50 @@ def _to_float(val):
         return None
 
 
-# ── ADVERSARIAL REVIEW LOG ──────────────────────────────────────────────────
-# Round 1 (Correctness): PASS
-# Round 2 (Consistency): PASS
-# Round 3 (Edge Cases): PASS
-# Round 4 (Exception Handling): PASS
-# Round 5 (Logging/Observability): PASS
-# Round 6 (Backward Compatibility): PASS
-# Round 7 (Money Path Safety): PASS
+# ── ADVERSARIAL REVIEW LOG (2026-02-22) ─────────────────────────────────────
+# Round 1 (Correctness):
+#   - DE formula verified: candles[-8] is both price_past AND prev_close for TR[-7].
+#     No off-by-one. ATR = mean(TR[-7:...-1]) over 7 bars. ✓
+#   - Denominator = mean_TR × 7 = sum_TR = total path. Standard efficiency ratio. ✓
+#   VERDICT: PASS
+#
+# Round 2 (Consistency):
+#   - execute.py saves regime info to position_state.json ✓
+#   - trailing_state.json does NOT contain regime field — observability gap.
+#     Functionally OK: SL price is baked into exchange order. Not a runtime bug.
+#   VERDICT: PASS (minor: trailing_state could log regime for auditability)
+#
+# Round 3 (Edge Cases):
+#   - lookback_days=0 → trs=[] → return None (not ZeroDivisionError) ✓
+#   - Malformed H < L → abs() in TR formula prevents negative TR ✓
+#   - None entry mid-list → TypeError caught → return None ✓
+#   - de=float('nan') → nan > 0.25 = False → range params (safe) ✓
+#   VERDICT: PASS
+#
+# Round 4 (Exception Handling):
+#   - execute.py wraps get_candles()+compute_de() in try/except → de=None on any failure ✓
+#   - get_regime_params(None) → range params, no exception ✓
+#   - config.strategy=None → getattr fallback to 0.25 ✓
+#   VERDICT: PASS
+#
+# Round 5 (Logging/Observability):
+#   - ISSUE FOUND: logger.warning() silently drops if no handler configured.
+#   - FIX APPLIED: added print() alongside logger.warning() for journalctl visibility.
+#   VERDICT: FIXED
+#
+# Round 6 (Backward Compatibility):
+#   - Old config.toml without de_threshold → StrategyConfig default 0.25 ✓
+#   - Old position_state.json without regime fields → load_state() reads safely ✓
+#   - Old trailing_state.json → trailing.py doesn't read regime fields ✓
+#   - Test suite updated by Codex to use cfg.risk.* instead of hardcoded values ✓
+#   VERDICT: PASS
+#
+# Round 7 (Money Path Safety):
+#   - BUG FOUND: fix_sl_tp() used hardcoded STOP_LOSS_PCT/TAKE_PROFIT_PCT constants.
+#     For range-regime position (SL=5%), if SL order is lost, fix_sl_tp() would
+#     re-place at 4% — too tight for ranging market, causes premature stop-out.
+#   - FIX APPLIED: fix_sl_tp() now reads position.get('regime_sl_pct', STOP_LOSS_PCT)
+#     and position.get('regime_tp_pct', TAKE_PROFIT_PCT) from saved state.
+#   - de=None, de=float('nan'), de negative → all safely route to range params ✓
+#   - sl_pct/tp_pct constants are positive floats, cannot produce zero/negative prices ✓
+#   VERDICT: BUG FIXED

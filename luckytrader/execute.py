@@ -649,18 +649,24 @@ def check_sl_tp_orders(coin, position):
     return sl_exists, tp_exists
 
 def fix_sl_tp(position):
-    """修复缺失的SL/TP"""
+    """修复缺失的SL/TP — 使用开仓时的 regime 参数（不用硬编码常量）"""
     coin = position["coin"]
     size = abs(position["size"])
     entry = position["entry_price"]
     is_long = position["direction"] == "LONG"
-    
+
+    # 优先使用开仓时保存的 regime SL/TP，回退到 config 默认值
+    sl_pct = position.get("regime_sl_pct", STOP_LOSS_PCT)
+    tp_pct = position.get("regime_tp_pct", TAKE_PROFIT_PCT)
+    print(f"fix_sl_tp: 使用 sl_pct={sl_pct*100:.0f}% tp_pct={tp_pct*100:.0f}% "
+          f"(regime={position.get('regime', 'unknown')}, 来源={'state' if 'regime_sl_pct' in position else 'config默认'})")
+
     if is_long:
-        sl_price = round(entry * (1 - STOP_LOSS_PCT))
-        tp_price = round(entry * (1 + TAKE_PROFIT_PCT))
+        sl_price = round(entry * (1 - sl_pct))
+        tp_price = round(entry * (1 + tp_pct))
     else:
-        sl_price = round(entry * (1 + STOP_LOSS_PCT))
-        tp_price = round(entry * (1 - TAKE_PROFIT_PCT))
+        sl_price = round(entry * (1 + sl_pct))
+        tp_price = round(entry * (1 - tp_pct))
     
     sl_exists, tp_exists = check_sl_tp_orders(coin, position)
     
