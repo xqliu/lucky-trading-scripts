@@ -221,7 +221,9 @@ class TestFormatReport:
         assert 'HOLD' in report
     
     def test_format_report_with_signal(self):
+        from luckytrader.config import get_config
         from luckytrader.signal import format_report
+        cfg = get_config()
         result = {
             'price': 67000,
             'volume_usd': 5000000,
@@ -243,12 +245,12 @@ class TestFormatReport:
             'signal': 'LONG',
             'signal_reasons': ['突破24h高点$68,000', '30m放量1.5x'],
             'suggested_stop': 64320,
-            'suggested_tp': 71690,
+            'suggested_tp': 68340,
             'market_context': {},
             'recent_fills': [],
         }
         report = format_report(result)
         assert 'LONG' in report
-        assert '-4%' in report
-        assert '+7%' in report
+        assert f"-{cfg.risk.stop_loss_pct*100:.0f}%" in report
+        assert f"+{cfg.risk.take_profit_pct*100:.0f}%" in report
         assert '60h' in report

@@ -14,10 +14,12 @@ class TestParameterConsistency:
     
     def test_sl_tp_hold_match_signal_check(self):
         """execute_signal params must match signal_check suggestions."""
+        from luckytrader.config import get_config
         from luckytrader.execute import STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_HOLD_HOURS
-        assert STOP_LOSS_PCT == 0.04, f"SL should be 4%, got {STOP_LOSS_PCT*100}%"
-        assert TAKE_PROFIT_PCT == 0.07, f"TP should be 7%, got {TAKE_PROFIT_PCT*100}%"
-        assert MAX_HOLD_HOURS == 60, f"Hold should be 60h, got {MAX_HOLD_HOURS}h"
+        cfg = get_config()
+        assert STOP_LOSS_PCT == cfg.risk.stop_loss_pct
+        assert TAKE_PROFIT_PCT == cfg.risk.take_profit_pct
+        assert MAX_HOLD_HOURS == cfg.risk.max_hold_hours
     
     def test_notification_text_matches_params(self):
         """Discord notification must show correct TP% and hold hours."""

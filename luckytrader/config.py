@@ -59,6 +59,8 @@ class StrategyConfig:
     vol_threshold: float = 2.0
     lookback_bars: int = 48
     range_bars: int = 48
+    de_threshold: float = 0.25      # Directional Efficiency threshold (trend vs range)
+    de_lookback_days: int = 7       # Days window for DE calculation
 
 @dataclass(frozen=True)
 class RiskConfig:
