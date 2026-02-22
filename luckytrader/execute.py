@@ -515,11 +515,15 @@ def emergency_close(coin, size, is_long, max_retries=3):
     notify_discord(f"🚨🚨🚨 **紧急平仓失败** — {coin} 仓位无保护！需要人工干预！")
     raise RuntimeError(f"紧急平仓失败: {coin} size={size} — 仓位无保护！")
 
-def close_position(position):
-    """正常平仓（超时等原因）"""
+def close_position(position, max_retries=3, backoff_seconds=5):
+    """正常平仓（超时等原因），带指数退避重试
+
+    Args:
+        position: 本地 state 中的仓位信息
+        max_retries: 失败后最多重试次数（总尝试 = 1 + max_retries）
+        backoff_seconds: 首次重试等待秒数，后续指数增长（0 = 不等待，用于测试）
+    """
     coin = position["coin"]
-    size = abs(position["size"])
-    is_long = position["direction"] == "LONG"
     
     # 先验证链上是否真的有仓位（防止 state 与链上不一致）
     real_pos = get_position(coin)
@@ -527,11 +531,11 @@ def close_position(position):
         print(f"⚠️ 链上无 {coin} 持仓，state 残留。清理 state。")
         save_state({"position": None})
         notify_discord(f"ℹ️ {coin} 超时平仓跳过 — 链上已无仓位（可能 SL/TP 已触发）")
-        return
+        return None
     # 用链上真实数据覆盖，防止 size 不一致
     size = abs(real_pos["size"])
     is_long = real_pos["direction"] == "LONG"
-    
+
     # 先取消所有挂单
     try:
         orders = get_open_orders_detailed()
@@ -541,19 +545,38 @@ def close_position(position):
                 print(f"已取消订单 {o['oid']}")
     except Exception as e:
         print(f"取消挂单失败: {e}")
-    
-    # 市价平仓
-    result = place_market_order(coin, not is_long, size)
-    print(f"平仓结果: {json.dumps(result, indent=2)}")
 
-    if result.get("status") == "err":
-        notify_discord(f"🚨 **超时平仓失败** — {coin} 仓位可能仍存在！需要人工干预！\n错误: {result}")
-        raise RuntimeError(f"平仓失败: {coin} size={size} — {result}")
+    # 市价平仓 — 带指数退避重试
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            result = place_market_order(coin, not is_long, size)
+            print(f"平仓结果 (attempt {attempt + 1}): {json.dumps(result, indent=2)}")
+            if result.get("status") != "err":
+                # 成功
+                save_state({"position": None})
+                log_trade("CLOSE", coin, real_pos["direction"], size,
+                          get_market_price(coin), reason="超时平仓")
+                return True
+            last_error = f"status=err: {result}"
+        except Exception as e:
+            last_error = str(e)
+            print(f"❌ 平仓异常 (attempt {attempt + 1}/{max_retries + 1}): {e}")
 
-    save_state({"position": None})
-    log_trade("CLOSE", coin, real_pos["direction"], size,
-              get_market_price(coin), reason="超时平仓")
-    return True
+        if attempt < max_retries:
+            wait = backoff_seconds * (2 ** attempt) if backoff_seconds > 0 else 0
+            if wait > 0:
+                print(f"⏳ {wait}s 后重试...")
+                time.sleep(wait)
+            else:
+                print(f"🔄 重试 ({attempt + 2}/{max_retries + 1})...")
+
+    # 全部重试失败
+    notify_discord(
+        f"🚨 **超时平仓失败** — {coin} 仓位可能仍存在！需要人工干预！\n"
+        f"重试 {max_retries} 次后仍失败: {last_error}"
+    )
+    raise RuntimeError(f"平仓失败: {coin} size={size} — {last_error}")
 
 def check_sl_tp_orders(coin, position):
     """检查SL/TP订单是否存在"""
