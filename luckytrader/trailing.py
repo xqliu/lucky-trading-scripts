@@ -116,6 +116,25 @@ def get_current_stop_order(coin: str, is_long: bool):
     
     return None
 
+def _get_regime_sl_pct(coin: str) -> float:
+    """从 position_state.json 读取 regime_sl_pct，找不到则回退到 INITIAL_STOP_PCT。
+    
+    execute.py 开仓时把 regime_sl_pct 写入 position_state.json。
+    trailing.py 用它作为"初始止损基准"，确保止损丢失重设时与开仓时的 SL 一致。
+    """
+    try:
+        from luckytrader.execute import load_state as load_execute_state
+        exec_state = load_execute_state()
+        pos = exec_state.get("position") or {}
+        if pos.get("coin") == coin and pos.get("regime_sl_pct"):
+            pct = float(pos["regime_sl_pct"])
+            print(f"   Trailing initial_stop: using regime_sl_pct={pct*100:.0f}% (regime={pos.get('regime','?')})")
+            return pct
+    except Exception as e:
+        print(f"   ⚠️ 读取 regime_sl_pct 失败，回退到 INITIAL_STOP_PCT: {e}")
+    return INITIAL_STOP_PCT
+
+
 def check_and_update_trailing_stop(coin: str, position: dict, state: dict):
     """检查并更新移动止损"""
     
@@ -123,6 +142,9 @@ def check_and_update_trailing_stop(coin: str, position: dict, state: dict):
     current_price = get_market_price(coin)
     size = position["size"]
     is_long = position["is_long"]
+    
+    # 初始止损用 regime SL（开仓时确定），止损丢失重设时与开仓一致
+    regime_initial_sl_pct = _get_regime_sl_pct(coin)
     
     # 获取或初始化状态
     pos_state = state.get(coin, {
@@ -158,10 +180,10 @@ def check_and_update_trailing_stop(coin: str, position: dict, state: dict):
         print(f"🔔 Trailing stop ACTIVATED for {coin}! Gain: {gain_pct*100:.1f}%")
     
     # 计算止损位
-    # 1) 未激活时：初始止损 = 入场价 * (1 - INITIAL_STOP_PCT)
+    # 1) 未激活时：初始止损用 regime_sl_pct（开仓时由 execute.py 确定）
     # 2) 激活后：移动止损 = 最高价 * (1 - TRAILING_PCT)，但不低于入场价
     if is_long:
-        initial_stop = entry_price * (1 - INITIAL_STOP_PCT)
+        initial_stop = entry_price * (1 - regime_initial_sl_pct)
         if trailing_active:
             trailing_stop = high_water_mark * (1 - TRAILING_PCT)
             # 移动止损不低于入场价（保本线）
@@ -169,7 +191,7 @@ def check_and_update_trailing_stop(coin: str, position: dict, state: dict):
         else:
             new_stop = initial_stop
     else:
-        initial_stop = entry_price * (1 + INITIAL_STOP_PCT)
+        initial_stop = entry_price * (1 + regime_initial_sl_pct)
         if trailing_active:
             trailing_stop = high_water_mark * (1 + TRAILING_PCT)
             # 移动止损不高于入场价（保本线）
