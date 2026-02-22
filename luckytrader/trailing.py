@@ -117,10 +117,12 @@ def get_current_stop_order(coin: str, is_long: bool):
     return None
 
 def _get_regime_sl_pct(coin: str) -> float:
-    """从 position_state.json 读取 regime_sl_pct，找不到则回退到 INITIAL_STOP_PCT。
-    
-    execute.py 开仓时把 regime_sl_pct 写入 position_state.json。
-    trailing.py 用它作为"初始止损基准"，确保止损丢失重设时与开仓时的 SL 一致。
+    """从 position_state.json 读取 regime_sl_pct，确保初始止损与开仓时的 SL 一致。
+
+    回退优先级：
+      1. position_state.json 里的 regime_sl_pct（execute.py 开仓时写入）
+      2. config 的 stop_loss_pct（4%）
+      注意：不用 INITIAL_STOP_PCT (3.5%)，那是 trailing 的独立参数，不是 SL 基准。
     """
     try:
         from luckytrader.execute import load_state as load_execute_state
@@ -128,11 +130,14 @@ def _get_regime_sl_pct(coin: str) -> float:
         pos = exec_state.get("position") or {}
         if pos.get("coin") == coin and pos.get("regime_sl_pct"):
             pct = float(pos["regime_sl_pct"])
-            print(f"   Trailing initial_stop: using regime_sl_pct={pct*100:.0f}% (regime={pos.get('regime','?')})")
+            print(f"   Trailing initial_stop: regime_sl_pct={pct*100:.0f}% (regime={pos.get('regime','?')})")
             return pct
     except Exception as e:
-        print(f"   ⚠️ 读取 regime_sl_pct 失败，回退到 INITIAL_STOP_PCT: {e}")
-    return INITIAL_STOP_PCT
+        print(f"   ⚠️ 读取 regime_sl_pct 失败，回退到 config stop_loss_pct: {e}")
+    # fallback：用 config SL（4%），不用 INITIAL_STOP_PCT（3.5%）
+    fallback = _cfg.risk.stop_loss_pct
+    print(f"   Trailing initial_stop: fallback to config stop_loss_pct={fallback*100:.0f}%")
+    return fallback
 
 
 def check_and_update_trailing_stop(coin: str, position: dict, state: dict):
