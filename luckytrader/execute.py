@@ -15,7 +15,8 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from luckytrader.signal import analyze, get_recent_fills
+from luckytrader.signal import analyze, get_recent_fills, get_candles
+from luckytrader.regime import compute_de, get_regime_params
 from luckytrader.trade import (
     get_account_info, get_market_price, get_open_orders_detailed,
     place_market_order, place_stop_loss, place_take_profit, cancel_order,
@@ -289,34 +290,48 @@ def dry_run_open(signal, analysis):
     coin = "BTC"
     price = analysis["price"]
     is_long = signal == "LONG"
+
+    # Compute DE regime to select adaptive TP/SL
+    try:
+        candles_1d = get_candles("BTC", "1d", (_cfg.strategy.de_lookback_days + 3) * 24)
+        de = compute_de(candles_1d, lookback_days=_cfg.strategy.de_lookback_days)
+    except Exception as e:
+        print(f"⚠️ DE计算失败，降级为默认区间参数: {e}")
+        de = None
+    regime_params = get_regime_params(de, _cfg)
+    sl_pct = regime_params['sl_pct']
+    tp_pct = regime_params['tp_pct']
+    regime = regime_params['regime']
+    de_str = f"{de:.3f}" if de is not None else "None"
+    print(f"🔍 Regime={regime} DE={de_str} → TP={tp_pct*100:.0f}% SL={sl_pct*100:.0f}%")
     
     account = get_account_info()
     account_value = float(account["account_value"])
     position_value = account_value * POSITION_RATIO
     
-    max_loss_at_sl = position_value * STOP_LOSS_PCT
+    max_loss_at_sl = position_value * sl_pct
     if max_loss_at_sl > MAX_SINGLE_LOSS:
-        position_value = MAX_SINGLE_LOSS / STOP_LOSS_PCT
+        position_value = MAX_SINGLE_LOSS / sl_pct
     
     coin_info = get_coin_info(coin)
     sz_decimals = coin_info.get("szDecimals", 5) if coin_info else 5
     size = round(position_value / price, sz_decimals)
     
     if is_long:
-        sl_price = round(price * (1 - STOP_LOSS_PCT))
-        tp_price = round(price * (1 + TAKE_PROFIT_PCT))
+        sl_price = round(price * (1 - sl_pct))
+        tp_price = round(price * (1 + tp_pct))
     else:
-        sl_price = round(price * (1 + STOP_LOSS_PCT))
-        tp_price = round(price * (1 - TAKE_PROFIT_PCT))
+        sl_price = round(price * (1 + sl_pct))
+        tp_price = round(price * (1 - tp_pct))
     
     print(f"\n{'='*50}")
     print(f"🧪 DRY RUN — WOULD OPEN: {signal} {coin}")
     print(f"   账户: ${account_value:.2f}")
     print(f"   数量: {size} ({position_value:.2f} USD)")
     print(f"   价格: ~${price:,.2f}")
-    print(f"   止损: ${sl_price:,.2f} ({'-' if is_long else '+'}{STOP_LOSS_PCT*100:.0f}%)")
-    print(f"   止盈: ${tp_price:,.2f} ({'+' if is_long else '-'}{TAKE_PROFIT_PCT*100:.0f}%)")
-    print(f"   最大亏损: ${position_value * STOP_LOSS_PCT:.2f}")
+    print(f"   止损: ${sl_price:,.2f} ({'-' if is_long else '+'}{sl_pct*100:.0f}%)")
+    print(f"   止盈: ${tp_price:,.2f} ({'+' if is_long else '-'}{tp_pct*100:.0f}%)")
+    print(f"   最大亏损: ${position_value * sl_pct:.2f}")
     print(f"   信号理由: {'; '.join(analysis.get('signal_reasons', []))}")
     print(f"{'='*50}")
     print(f"⚠️  DRY RUN — 未下单！")
@@ -330,7 +345,11 @@ def dry_run_open(signal, analysis):
         "sl": sl_price,
         "tp": tp_price,
         "position_value": position_value,
-        "max_loss": position_value * STOP_LOSS_PCT,
+        "max_loss": position_value * sl_pct,
+        "regime": regime,
+        "de": de,
+        "regime_tp_pct": tp_pct,
+        "regime_sl_pct": sl_pct,
         "reasons": analysis.get("signal_reasons", []),
     }
 
@@ -339,6 +358,20 @@ def open_position(signal, analysis):
     coin = "BTC"
     price = analysis["price"]
     is_long = signal == "LONG"
+
+    # Compute DE regime to select adaptive TP/SL
+    try:
+        candles_1d = get_candles("BTC", "1d", (_cfg.strategy.de_lookback_days + 3) * 24)
+        de = compute_de(candles_1d, lookback_days=_cfg.strategy.de_lookback_days)
+    except Exception as e:
+        print(f"⚠️ DE计算失败，降级为默认区间参数: {e}")
+        de = None
+    regime_params = get_regime_params(de, _cfg)
+    sl_pct = regime_params['sl_pct']
+    tp_pct = regime_params['tp_pct']
+    regime = regime_params['regime']
+    de_str = f"{de:.3f}" if de is not None else "None"
+    print(f"🔍 Regime={regime} DE={de_str} → TP={tp_pct*100:.0f}% SL={sl_pct*100:.0f}%")
     
     # 计算仓位大小
     account = get_account_info()
@@ -346,9 +379,9 @@ def open_position(signal, analysis):
     position_value = account_value * POSITION_RATIO
     
     # 检查单笔最大亏损限制
-    max_loss_at_sl = position_value * STOP_LOSS_PCT
+    max_loss_at_sl = position_value * sl_pct
     if max_loss_at_sl > MAX_SINGLE_LOSS:
-        position_value = MAX_SINGLE_LOSS / STOP_LOSS_PCT
+        position_value = MAX_SINGLE_LOSS / sl_pct
         print(f"仓位受限于最大单笔亏损 ${MAX_SINGLE_LOSS}: 仓位 ${position_value:.2f}")
     
     # 获取精度
@@ -362,19 +395,19 @@ def open_position(signal, analysis):
     
     # 计算 SL/TP 价格
     if is_long:
-        sl_price = round(price * (1 - STOP_LOSS_PCT))
-        tp_price = round(price * (1 + TAKE_PROFIT_PCT))
+        sl_price = round(price * (1 - sl_pct))
+        tp_price = round(price * (1 + tp_pct))
     else:
-        sl_price = round(price * (1 + STOP_LOSS_PCT))
-        tp_price = round(price * (1 - TAKE_PROFIT_PCT))
+        sl_price = round(price * (1 + sl_pct))
+        tp_price = round(price * (1 - tp_pct))
     
     print(f"\n{'='*50}")
     print(f"🚀 开仓: {signal} {coin}")
     print(f"   数量: {size} ({position_value:.2f} USD)")
     print(f"   价格: ~${price:,.2f}")
-    print(f"   止损: ${sl_price:,.2f} ({'-' if is_long else '+'}{STOP_LOSS_PCT*100:.0f}%)")
-    print(f"   止盈: ${tp_price:,.2f} ({'+' if is_long else '-'}{TAKE_PROFIT_PCT*100:.0f}%)")
-    print(f"   最大亏损: ${position_value * STOP_LOSS_PCT:.2f}")
+    print(f"   止损: ${sl_price:,.2f} ({'-' if is_long else '+'}{sl_pct*100:.0f}%)")
+    print(f"   止盈: ${tp_price:,.2f} ({'+' if is_long else '-'}{tp_pct*100:.0f}%)")
+    print(f"   最大亏损: ${position_value * sl_pct:.2f}")
     print(f"{'='*50}")
     
     # Step 1: 市价开仓
@@ -402,11 +435,11 @@ def open_position(signal, analysis):
     
     # 用实际入场价重新计算SL/TP
     if is_long:
-        sl_price = round(actual_entry * (1 - STOP_LOSS_PCT))
-        tp_price = round(actual_entry * (1 + TAKE_PROFIT_PCT))
+        sl_price = round(actual_entry * (1 - sl_pct))
+        tp_price = round(actual_entry * (1 + tp_pct))
     else:
-        sl_price = round(actual_entry * (1 + STOP_LOSS_PCT))
-        tp_price = round(actual_entry * (1 - TAKE_PROFIT_PCT))
+        sl_price = round(actual_entry * (1 + sl_pct))
+        tp_price = round(actual_entry * (1 - tp_pct))
     
     # Step 2: 设止损
     print(f"\n[2/3] 设止损 ${sl_price:,.2f}...")
@@ -460,17 +493,29 @@ def open_position(signal, analysis):
             "tp_price": tp_price,
             "max_hold_hours": MAX_HOLD_HOURS,
             "deadline": (datetime.now(timezone.utc) + timedelta(hours=MAX_HOLD_HOURS)).isoformat(),
+            "regime": regime,
+            "de": de,
+            "regime_tp_pct": tp_pct,
+            "regime_sl_pct": sl_pct,
         }
     }
     save_state(state)
-    
-    log_trade("OPEN", coin, signal, actual_size, actual_entry, sl_price, tp_price,
-              "; ".join(analysis.get("signal_reasons", [])))
+
+    regime_reason = f"regime={regime} de={de_str} tp={tp_pct*100:.0f}% sl={sl_pct*100:.0f}%"
+    reasons = analysis.get("signal_reasons", [])
+    reason_text = "; ".join(reasons + [regime_reason]) if reasons else regime_reason
+    log_trade("OPEN", coin, signal, actual_size, actual_entry, sl_price, tp_price, reason_text)
     
     print(f"\n✅ 开仓完成！SL=${sl_price:,.2f} TP=${tp_price:,.2f}")
     print(f"⏰ 超时平仓时间: {state['position']['deadline']}")
     
-    notify_discord(f"🚀 **开仓** {signal} {coin}\n💰 入场: ${actual_entry:,.2f} | 数量: {actual_size}\n🛑 止损: ${sl_price:,.2f} (-{STOP_LOSS_PCT*100:.0f}%) | 🎯 止盈: ${tp_price:,.2f} (+{TAKE_PROFIT_PCT*100:.0f}%)\n⏰ 最长持仓: {MAX_HOLD_HOURS}h")
+    notify_discord(
+        f"🚀 **开仓** {signal} {coin}\n"
+        f"💰 入场: ${actual_entry:,.2f} | 数量: {actual_size}\n"
+        f"🛑 止损: ${sl_price:,.2f} (-{sl_pct*100:.0f}%) | 🎯 止盈: ${tp_price:,.2f} (+{tp_pct*100:.0f}%)\n"
+        f"🔍 Regime: {regime} (DE={de_str})\n"
+        f"⏰ 最长持仓: {MAX_HOLD_HOURS}h"
+    )
     
     return {
         "action": "OPENED",
@@ -480,6 +525,10 @@ def open_position(signal, analysis):
         "sl": sl_price,
         "tp": tp_price,
         "deadline": state["position"]["deadline"],
+        "regime": regime,
+        "de": de,
+        "regime_tp_pct": tp_pct,
+        "regime_sl_pct": sl_pct,
     }
 
 def emergency_close(coin, size, is_long, max_retries=3):
@@ -504,14 +553,18 @@ def emergency_close(coin, size, is_long, max_retries=3):
     # All retries failed — persist danger state, alert, and RAISE
     print("❌❌ 紧急平仓全部失败！持久化告警...")
     danger_file = _WORKSPACE_DIR / "memory" / "trading" / "DANGER_UNPROTECTED.json"
-    danger_file.parent.mkdir(parents=True, exist_ok=True)
-    danger_file.write_text(json.dumps({
-        "time": datetime.now(timezone.utc).isoformat(),
-        "coin": coin,
-        "size": size,
-        "is_long": is_long,
-        "reason": "emergency_close failed after all retries",
-    }, indent=2))
+    try:
+        danger_file.parent.mkdir(parents=True, exist_ok=True)
+        danger_file.write_text(json.dumps({
+            "time": datetime.now(timezone.utc).isoformat(),
+            "coin": coin,
+            "size": size,
+            "is_long": is_long,
+            "reason": "emergency_close failed after all retries",
+        }, indent=2))
+    except Exception as e:
+        # Persistence failure must not mask the critical RuntimeError path.
+        print(f"⚠️ 持久化告警文件失败: {e}")
     notify_discord(f"🚨🚨🚨 **紧急平仓失败** — {coin} 仓位无保护！需要人工干预！")
     raise RuntimeError(f"紧急平仓失败: {coin} size={size} — 仓位无保护！")
 

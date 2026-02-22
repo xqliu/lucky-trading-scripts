@@ -30,7 +30,8 @@ class TestOpenPositionFlow:
                 "liquidation_price": 0,
             }
             with patch('luckytrader.execute.save_state') as mock_save:
-                result = open_position("LONG", {"price": 67000, "signal_reasons": ["test"]})
+                with patch('luckytrader.execute.compute_de', return_value=0.40):
+                    result = open_position("LONG", {"price": 67000, "signal_reasons": ["test"]})
         
         assert result["action"] == "OPENED"
         assert result["direction"] == "LONG"
