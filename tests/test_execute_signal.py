@@ -17,7 +17,7 @@ class TestParameterConsistency:
         from luckytrader.execute import STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_HOLD_HOURS
         assert STOP_LOSS_PCT == 0.04, f"SL should be 4%, got {STOP_LOSS_PCT*100}%"
         assert TAKE_PROFIT_PCT == 0.07, f"TP should be 7%, got {TAKE_PROFIT_PCT*100}%"
-        assert MAX_HOLD_HOURS == 72, f"Hold should be 72h, got {MAX_HOLD_HOURS}h"
+        assert MAX_HOLD_HOURS == 60, f"Hold should be 60h, got {MAX_HOLD_HOURS}h"
     
     def test_notification_text_matches_params(self):
         """Discord notification must show correct TP% and hold hours."""
@@ -27,8 +27,8 @@ class TestParameterConsistency:
         # The notify_discord call should NOT contain old params
         assert '+5%' not in source or '+7%' in source, \
             "Notification text still says +5% but TP is 7%"
-        assert '48h' not in source or '72h' in source, \
-            "Notification text still says 48h but hold is 72h"
+        assert '48h' not in source or '60h' in source, \
+            "Notification text still says 48h but hold is 60h"
 
 
 class TestPositionSizing:

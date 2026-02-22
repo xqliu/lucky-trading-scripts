@@ -14,7 +14,7 @@ class TestConfigLoader:
         cfg = get_config()
         assert cfg.risk.stop_loss_pct == 0.04
         assert cfg.risk.take_profit_pct == 0.07
-        assert cfg.risk.max_hold_hours == 72
+        assert cfg.risk.max_hold_hours == 60
         assert cfg.strategy.vol_threshold == 1.25
         assert cfg.trailing.initial_stop_pct == 0.035
     

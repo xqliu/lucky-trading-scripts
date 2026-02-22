@@ -26,18 +26,28 @@ class TestExecuteSignalAsync:
             "price": 67000,
         }
 
-        with patch('luckytrader.execute.get_position', return_value=None), \
-             patch('luckytrader.execute.open_position', return_value={"action": "OPENED", "direction": "LONG", "size": 0.001, "entry": 67000, "sl": 64320, "tp": 71690}) as mock_open, \
-             patch('asyncio.to_thread', new_callable=AsyncMock) as mock_to_thread:
-            mock_to_thread.return_value = {"action": "OPENED", "direction": "LONG", "size": 0.001, "entry": 67000, "sl": 64320, "tp": 71690}
+        opened = {"action": "OPENED", "direction": "LONG", "size": 0.001, "entry": 67000, "sl": 64320, "tp": 71690}
 
-            result = await executor.execute_signal(signal_result)
+        with patch('luckytrader.execute.open_position', return_value=opened) as mock_open:
+            # execute_signal calls asyncio.to_thread twice:
+            # 1. to_thread(self.has_position) → must return False (no position)
+            # 2. to_thread(execute.open_position, ...) → returns OPENED
+            call_idx = [0]
+            async def side_effect(func, *args, **kwargs):
+                call_idx[0] += 1
+                if call_idx[0] == 1:  # has_position call
+                    return False
+                return opened  # open_position call
 
-            # Verify asyncio.to_thread was called with the sync function
-            mock_to_thread.assert_called_once()
-            args = mock_to_thread.call_args[0]
-            assert args[0] is mock_open  # first arg is the function
-            assert result["action"] == "OPENED"
+            with patch('asyncio.to_thread', side_effect=side_effect) as mock_to_thread:
+                result = await executor.execute_signal(signal_result)
+
+                # Verify asyncio.to_thread was called at least twice
+                assert mock_to_thread.call_count >= 2
+                # Second call must be open_position
+                second_call_args = mock_to_thread.call_args_list[1][0]
+                assert second_call_args[0] is mock_open  # open_position is the function
+                assert result["action"] == "OPENED"
 
 
 # === Fix 2: trailing loop must not block event loop ===
@@ -56,7 +66,12 @@ class TestTrailingLoopAsync:
         async def fake_to_thread(func, *args, **kwargs):
             nonlocal call_count
             call_count += 1
-            return None  # trailing.main returns None/alerts
+            # has_position must return True so _trailing_loop proceeds to call trailing.main
+            if hasattr(func, '__name__') and func.__name__ == 'has_position':
+                return True
+            if hasattr(func, '__self__') and hasattr(func.__self__, 'has_position'):
+                return True
+            return None  # trailing.main and other calls return None
 
         with patch('luckytrader.execute.get_position', return_value={"coin": "BTC", "size": 0.001}), \
              patch('luckytrader.ws_monitor.trailing') as mock_trailing, \

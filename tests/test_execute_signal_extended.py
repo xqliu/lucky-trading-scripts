@@ -42,7 +42,7 @@ class TestOpenPositionFlow:
         notify_call = mock_notify.call_args[0][0]
         assert '-4%' in notify_call
         assert '+7%' in notify_call
-        assert '72h' in notify_call
+        assert '60h' in notify_call
     
     @patch('luckytrader.execute.notify_discord')
     @patch('luckytrader.execute.get_coin_info', return_value={"szDecimals": 5})
@@ -149,7 +149,7 @@ class TestExistingPositionBranches:
                 "entry_price": 67000.0,
                 "entry_time": datetime.now(timezone.utc).isoformat(),
                 "sl_price": 64320.0, "tp_price": 71690.0,
-                "max_hold_hours": 72,
+                "max_hold_hours": 60,
             }
         }
         
@@ -178,7 +178,7 @@ class TestExistingPositionBranches:
                 "entry_price": 67000.0,
                 "entry_time": datetime.now(timezone.utc).isoformat(),
                 "sl_price": 64320.0, "tp_price": 71690.0,
-                "max_hold_hours": 72,
+                "max_hold_hours": 60,
             }
         }
         

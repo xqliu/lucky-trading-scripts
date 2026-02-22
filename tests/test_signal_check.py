@@ -251,4 +251,4 @@ class TestFormatReport:
         assert 'LONG' in report
         assert '-4%' in report
         assert '+7%' in report
-        assert '72h' in report
+        assert '60h' in report
