@@ -67,7 +67,7 @@ def get_market_context():
         return {}
 
 def get_recent_fills(limit=3):
-    """获取最近成交"""
+    """获取最近成交（原始 fills，保留供其他模块使用）"""
     import requests
     url = 'https://api.hyperliquid.xyz/info'
     wallet = get_config().exchange.main_wallet
@@ -83,6 +83,83 @@ def get_recent_fills(limit=3):
         } for f in fills]
     except:
         return []
+
+def get_recent_trades(limit=3):
+    """获取最近 N 笔完整交易（开仓+平仓配对为一行）"""
+    import requests
+    url = 'https://api.hyperliquid.xyz/info'
+    wallet = get_config().exchange.main_wallet
+    try:
+        resp = requests.post(url, json={'type': 'userFills', 'user': wallet}, timeout=10)
+        raw = resp.json()[:30]  # 多取一些以便配对
+    except:
+        return []
+
+    # 解析每条 fill
+    fills = []
+    for f in raw:
+        fills.append({
+            'coin': f['coin'],
+            'side': 'BUY' if f['side'] == 'B' else 'SELL',
+            'size': float(f['sz']),
+            'price': float(f['px']),
+            'time': int(f['time']),
+            'dir': f.get('dir', ''),           # "Open Long/Short" or "Close Long/Short"
+            'pnl': float(f.get('closedPnl', 0)),
+        })
+
+    # 配对逻辑：从新到旧遍历，Close 找对应的 Open
+    trades = []
+    used = set()
+    for i, f in enumerate(fills):
+        if i in used:
+            continue
+        is_close = f['dir'].startswith('Close')
+        is_open = f['dir'].startswith('Open')
+
+        if is_close:
+            # 找对应的 Open（往后找，同 coin，相反方向）
+            open_side = 'BUY' if f['side'] == 'SELL' else 'SELL'
+            paired = None
+            for j in range(i + 1, len(fills)):
+                if j in used:
+                    continue
+                o = fills[j]
+                if o['coin'] == f['coin'] and o['side'] == open_side and o['dir'].startswith('Open'):
+                    paired = o
+                    used.add(j)
+                    break
+            used.add(i)
+            direction = 'LONG' if f['side'] == 'SELL' else 'SHORT'
+            trades.append({
+                'coin': f['coin'],
+                'direction': direction,
+                'open_price': paired['price'] if paired else None,
+                'open_time': paired['time'] if paired else None,
+                'close_price': f['price'],
+                'close_time': f['time'],
+                'pnl': f['pnl'],
+                'status': 'closed',
+            })
+        elif is_open:
+            # 开仓但无对应平仓（持仓中）
+            used.add(i)
+            direction = 'LONG' if f['side'] == 'BUY' else 'SHORT'
+            trades.append({
+                'coin': f['coin'],
+                'direction': direction,
+                'open_price': f['price'],
+                'open_time': f['time'],
+                'close_price': None,
+                'close_time': None,
+                'pnl': None,
+                'status': 'open',
+            })
+
+        if len(trades) >= limit:
+            break
+
+    return trades
 
 def analyze(coin='BTC'):
     candles_1h = get_candles(coin, '1h', 72)
@@ -101,7 +178,7 @@ def analyze(coin='BTC'):
     
     # 市场上下文（资金费率、OI、ETH）
     result['market_context'] = get_market_context()
-    result['recent_fills'] = get_recent_fills(3)
+    result['recent_trades'] = get_recent_trades(3)
     closes = [float(c['c']) for c in candles_1h]
     volumes = [float(c['v']) * float(c['c']) for c in candles_1h]
     
@@ -290,15 +367,23 @@ def format_report(result):
                 oi_usd = c['open_interest'] * c['mark_price']
                 lines.append(f"  {coin_name}: 费率 {fr*100:.4f}%/h ({fr_annual:+.1f}%年化) | OI ${oi_usd/1e9:.2f}B | ${c['mark_price']:,.0f}")
     
-    # 最近成交
-    fills = result.get('recent_fills', [])
-    if fills:
+    # 最近交易（开仓+平仓配对）
+    trades = result.get('recent_trades', [])
+    if trades:
         from datetime import datetime, timezone, timedelta
         _CST = timezone(timedelta(hours=8))
-        lines.append(f"\n📋 最近成交:")
-        for f in fills:
-            t = datetime.fromtimestamp(f['time']/1000, tz=timezone.utc).astimezone(_CST).strftime('%m-%d %H:%M')
-            lines.append(f"  {t} | {f['coin']} {f['side']} {f['size']} @ ${float(f['price']):,.0f}")
+        lines.append(f"\n📋 最近交易:")
+        for t in trades:
+            def _fmt_time(ts):
+                return datetime.fromtimestamp(ts/1000, tz=timezone.utc).astimezone(_CST).strftime('%m-%d %H:%M')
+            if t['status'] == 'closed' and t['open_price']:
+                open_t = _fmt_time(t['open_time'])
+                close_t = _fmt_time(t['close_time'])
+                pnl_str = f" | {'+' if t['pnl'] >= 0 else ''}{t['pnl']:.2f}U" if t['pnl'] is not None else ""
+                lines.append(f"  {t['coin']} {t['direction']} {open_t} {t['open_price']:,.0f}→{close_t} {t['close_price']:,.0f}{pnl_str}")
+            elif t['status'] == 'open':
+                open_t = _fmt_time(t['open_time'])
+                lines.append(f"  {t['coin']} {t['direction']} {open_t} {t['open_price']:,.0f}→持仓中")
     
     return '\n'.join(lines)
 
