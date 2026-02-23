@@ -169,14 +169,19 @@ class TestFormatReportEdgeCases:
                 'BTC': {'funding_rate': 0.0001, 'open_interest': 50000, 'mark_price': 67000},
                 'ETH': {'funding_rate': -0.00005, 'open_interest': 200000, 'mark_price': 1975},
             },
-            'recent_fills': [
-                {'coin': 'BTC', 'side': 'BUY', 'size': '0.001', 'price': '67000', 'time': 1707600000000},
+            'recent_trades': [
+                {
+                    'coin': 'BTC', 'direction': 'LONG', 'status': 'closed',
+                    'open_price': 67000, 'close_price': 67500,
+                    'open_time': 1707600000000, 'close_time': 1707603600000,
+                    'pnl': 0.50,
+                },
             ],
         }
         report = format_report(result)
         assert 'BTC' in report
         assert '费率' in report
-        assert '最近成交' in report
+        assert '最近交易' in report
     
     def test_format_with_empty_context(self):
         from luckytrader.signal import format_report
