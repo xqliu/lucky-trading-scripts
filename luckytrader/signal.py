@@ -1,47 +1,23 @@
 """
-Lucky Trading Signal System v5.1
+Lucky Trading Signal System v6.0
 单策略系统：放量突破
-回测验证：104天30分钟K线，230笔交易，胜率54.8%，期望+1.02%/笔
 
-参数（全量优化，1015组合扫描，next_open入场）：
-- 入场：突破24h区间 + 放量确认（可配置窗口）
-- 止损：4%
-- 止盈：7%
-- 持仓上限：60h
+核心逻辑统一在 strategy.py — 本文件只负责：
+1. 从 API 获取数据
+2. 调用 strategy.detect_signal() 生成信号
+3. 组装报告（展示用字段）
 """
 from hyperliquid.info import Info
 import time
 from datetime import datetime, timezone
 from luckytrader.config import get_config
+from luckytrader.strategy import ema, rsi, detect_signal, get_trend_4h, get_range_levels, get_vol_ratio
 
 def get_candles(coin, interval, hours):
     info = Info(skip_ws=True)
     end = int(time.time() * 1000)
     start = end - hours * 3600 * 1000
     return info.candles_snapshot(coin, interval, start, end)
-
-def ema(data, period):
-    result = [data[0]]
-    k = 2 / (period + 1)
-    for i in range(1, len(data)):
-        result.append(data[i] * k + result[-1] * (1 - k))
-    return result
-
-def rsi(data, period=14):
-    result = [50] * period
-    for i in range(period, len(data)):
-        gains, losses = [], []
-        for j in range(i - period + 1, i + 1):
-            change = data[j] - data[j-1]
-            if change > 0: gains.append(change)
-            elif change < 0: losses.append(abs(change))
-        avg_gain = sum(gains) / period if gains else 0
-        avg_loss = sum(losses) / period if losses else 0.0001
-        if avg_loss == 0:
-            avg_loss = 0.0001
-        rs = avg_gain / avg_loss
-        result.append(100 - 100 / (1 + rs))
-    return result
 
 def get_market_context():
     """获取资金费率、OI、ETH数据"""
@@ -258,36 +234,29 @@ def analyze(coin='BTC'):
         'vol_confirm': vol_confirm,
     }
     
-    # 4h 趋势方向过滤（顺势交易，回测验证：期望提升22-38%）
-    # 请求 42 根 4h K线（168h）：EMA21需21根，2倍余量防止API少返回数据导致UNKNOWN
+    # 4h 趋势 — 通过 strategy.get_trend_4h()（统一逻辑）
     candles_4h = get_candles(coin, '4h', 42 * 4)
-    trend_4h = 'UNKNOWN'
-    if candles_4h and len(candles_4h) >= 21:
-        closes_4h = [float(c['c']) for c in candles_4h]
-        ema8_4h = ema(closes_4h, 8)
-        ema21_4h = ema(closes_4h, 21)
-        trend_4h = 'UP' if ema8_4h[-1] > ema21_4h[-1] else 'DOWN'
+    trend_4h = get_trend_4h(candles_4h, int(time.time() * 1000))
     result['trend_4h'] = trend_4h
 
-    if breakout_up and vol_confirm:
-        if trend_4h == 'DOWN':
-            result['signal'] = 'HOLD'
-            result['signal_reasons'] = []
-            result['signal_filtered'] = f'LONG信号被过滤（4h趋势=DOWN，逆势不入场）'
-        else:
-            result['signal'] = 'LONG'
-            result['signal_reasons'] = [f'突破区间高点${high_range:,.0f}', f'放量{vol_ratio_30m:.1f}x', f'4h趋势{trend_4h}']
-    elif breakout_down and vol_confirm:
-        if trend_4h == 'UP':
-            result['signal'] = 'HOLD'
-            result['signal_reasons'] = []
-            result['signal_filtered'] = f'SHORT信号被过滤（4h趋势=UP，逆势不入场）'
-        else:
-            result['signal'] = 'SHORT'
-            result['signal_reasons'] = [f'跌破区间低点${low_range:,.0f}', f'放量{vol_ratio_30m:.1f}x', f'4h趋势{trend_4h}']
+    # 信号判断 — 通过 strategy.detect_signal()（统一逻辑）
+    # idx = len(candles_30m) - 1 → 检查倒数第二根已收盘 K 线
+    signal = detect_signal(candles_30m, candles_4h, len(candles_30m) - 1, _cfg)
+    
+    if signal == 'LONG':
+        result['signal'] = 'LONG'
+        result['signal_reasons'] = [f'突破区间高点${high_range:,.0f}', f'放量{vol_ratio_30m:.1f}x', f'4h趋势{trend_4h}']
+    elif signal == 'SHORT':
+        result['signal'] = 'SHORT'
+        result['signal_reasons'] = [f'跌破区间低点${low_range:,.0f}', f'放量{vol_ratio_30m:.1f}x', f'4h趋势{trend_4h}']
     else:
         result['signal'] = 'HOLD'
         result['signal_reasons'] = []
+        # 判断是否被过滤（有突破+放量但被4h趋势拦截）
+        if breakout_up and vol_confirm and trend_4h == 'DOWN':
+            result['signal_filtered'] = f'LONG信号被过滤（4h趋势=DOWN，逆势不入场）'
+        elif breakout_down and vol_confirm and trend_4h == 'UP':
+            result['signal_filtered'] = f'SHORT信号被过滤（4h趋势=UP，逆势不入场）'
     
     # 止损/止盈（回测最优参数）
     if result['signal'] == 'LONG':

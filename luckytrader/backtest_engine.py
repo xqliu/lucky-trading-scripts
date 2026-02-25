@@ -24,7 +24,7 @@ from typing import Optional, Dict, List, Tuple
 
 from hyperliquid.info import Info
 from luckytrader.regime import compute_de, get_regime_params
-from luckytrader.signal import ema, rsi
+from luckytrader.strategy import ema, rsi, detect_signal, should_tighten_tp, check_exit, compute_tp_price
 from luckytrader.config import get_config
 
 
@@ -36,86 +36,7 @@ def get_historical_candles(coin: str, interval: str, days: int) -> list:
     return info.candles_snapshot(coin, interval, start, end)
 
 
-def detect_signal_from_candles(candles_30m: list, candles_4h: list,
-                                idx: int, cfg) -> Optional[str]:
-    """从历史 K 线数据检测信号 — 复用 signal.py 的完整逻辑
-    
-    和实盘 analyze() 一样的判断：
-    1. 区间突破（用 range_bars 窗口，排除当前 K 线）
-    2. 放量确认（vol_threshold）
-    3. 4h 趋势方向过滤
-    
-    Args:
-        candles_30m: 所有 30m K 线
-        candles_4h: 所有 4h K 线（用于趋势过滤）
-        idx: 当前 30m K 线的索引
-        cfg: 配置对象
-    
-    Returns:
-        'LONG', 'SHORT', or None
-    """
-    range_bars = cfg.strategy.range_bars
-    lookback_bars = cfg.strategy.lookback_bars
-    vol_threshold = cfg.strategy.vol_threshold
-    
-    # 需要足够数据
-    if idx < range_bars + 2 or idx < lookback_bars + 2:
-        return None
-    
-    # 区间：用 idx-2 往前 range_bars 根（排除突破 K 线自身，和实盘一致）
-    range_slice = candles_30m[idx - range_bars - 1:idx - 1]
-    if len(range_slice) < range_bars:
-        return None
-    
-    high_range = max(float(c['h']) for c in range_slice)
-    low_range = min(float(c['l']) for c in range_slice)
-    
-    # 突破判定用上一根已收盘 K 线（idx-1）的 high/low
-    bar = candles_30m[idx - 1]
-    bar_high = float(bar['h'])
-    bar_low = float(bar['l'])
-    
-    breakout_up = bar_high > high_range
-    breakout_down = bar_low < low_range
-    
-    if not breakout_up and not breakout_down:
-        return None
-    
-    # 放量确认（lookback 窗口）
-    vol_start = max(0, idx - 1 - lookback_bars)
-    vol_slice = candles_30m[vol_start:idx - 1]
-    bar_vol = float(bar['v']) * float(bar['c'])
-    avg_vol = sum(float(c['v']) * float(c['c']) for c in vol_slice) / len(vol_slice) if vol_slice else 1
-    vol_ratio = bar_vol / avg_vol if avg_vol > 0 else 0
-    
-    if vol_ratio < vol_threshold:
-        return None
-    
-    # 4h 趋势方向过滤（和实盘一致）
-    bar_time = int(candles_30m[idx]['t'])
-    # 找到对应的 4h K 线位置
-    trend_4h = 'UNKNOWN'
-    if candles_4h and len(candles_4h) >= 21:
-        # 找到 <= bar_time 的最近 4h K 线
-        i4h = len(candles_4h) - 1
-        while i4h >= 0 and int(candles_4h[i4h]['t']) > bar_time:
-            i4h -= 1
-        if i4h >= 20:
-            closes_4h = [float(c['c']) for c in candles_4h[:i4h + 1]]
-            ema8_4h = ema(closes_4h, 8)
-            ema21_4h = ema(closes_4h, 21)
-            trend_4h = 'UP' if ema8_4h[-1] > ema21_4h[-1] else 'DOWN'
-    
-    if breakout_up and vol_ratio >= vol_threshold:
-        if trend_4h == 'DOWN':
-            return None  # 被过滤
-        return 'LONG'
-    elif breakout_down and vol_ratio >= vol_threshold:
-        if trend_4h == 'UP':
-            return None  # 被过滤
-        return 'SHORT'
-    
-    return None
+    # detect_signal 已移到 strategy.py，回测和实盘共用同一份实现
 
 
 def compute_de_for_date(candles_1d: list, bar_time_ms: int, lookback_days: int = 7) -> Optional[float]:
@@ -131,7 +52,7 @@ def compute_de_for_date(candles_1d: list, bar_time_ms: int, lookback_days: int =
 
 
 class Position:
-    """模拟持仓"""
+    """模拟持仓 — 退出判断委托给 strategy.check_exit()"""
     def __init__(self, direction: str, entry_price: float, entry_bar: int,
                  entry_time: str, tp_pct: float, sl_pct: float,
                  regime: str, de: float):
@@ -139,50 +60,29 @@ class Position:
         self.entry_price = entry_price
         self.entry_bar = entry_bar
         self.entry_time = entry_time
-        self.tp_pct = tp_pct  # 当前生效的 TP（可能被动态调整）
-        self.sl_pct = sl_pct  # SL 不动
-        self.entry_tp_pct = tp_pct  # 入场时的 TP（用于"只收紧不放松"判断）
-        self.entry_sl_pct = sl_pct
+        self.tp_pct = tp_pct
+        self.sl_pct = sl_pct
         self.regime = regime
         self.entry_regime = regime
         self.de = de
     
-    def pnl_pct(self, price: float) -> float:
-        if self.direction == 'LONG':
-            return (price - self.entry_price) / self.entry_price
-        else:
-            return (self.entry_price - price) / self.entry_price
-    
-    def check_exit(self, price: float, bars_held: int, max_hold_bars: int) -> Optional[Tuple[str, float]]:
-        """检查是否应该退出。返回 (reason, pnl_pct) 或 None"""
-        pnl = self.pnl_pct(price)
-        
-        if pnl >= self.tp_pct:
-            return (f'TP({self.regime}:{self.tp_pct*100:.0f}%)', pnl)
-        if pnl <= -self.sl_pct:
-            return (f'SL({self.regime}:{self.sl_pct*100:.0f}%)', pnl)
-        if bars_held >= max_hold_bars:
-            return ('TIMEOUT', pnl)
+    def try_exit(self, price: float, bars_held: int, max_hold_bars: int) -> Optional[Tuple[str, float]]:
+        """检查是否应该退出 — 调用 strategy.check_exit()"""
+        result = check_exit(self.direction, self.entry_price, price,
+                           bars_held, self.tp_pct, self.sl_pct, max_hold_bars)
+        if result:
+            reason, pnl = result
+            # 附加 regime 信息到 reason
+            return (f'{reason}({self.regime}:{self.tp_pct*100:.0f}%)', pnl)
         return None
     
     def update_regime(self, new_de: Optional[float], cfg) -> bool:
-        """动态 regime 重估 — 和实盘 reeval_regime_tp() 完全一致的逻辑
-        
-        Returns: True if TP was tightened
-        """
-        if new_de is None:
-            return False  # API 失败不调整（和实盘一致）
-        
-        new_params = get_regime_params(new_de, cfg)
-        new_tp_pct = new_params['tp_pct']
-        
-        # 只收紧不放松（和实盘一致）
-        if new_tp_pct >= self.tp_pct:
+        """动态 regime 重估 — 调用 strategy.should_tighten_tp()"""
+        new_tp = should_tighten_tp(self.tp_pct, new_de, cfg)
+        if new_tp is None:
             return False
-        
-        self.tp_pct = new_tp_pct
-        self.regime = new_params['regime']
-        # SL 不动（和实盘一致）
+        self.tp_pct = new_tp
+        self.regime = get_regime_params(new_de, cfg)['regime']
         return True
 
 
@@ -234,7 +134,7 @@ def run_backtest(coin: str = 'BTC', days: int = 90, dynamic_regime: bool = True,
                 position.update_regime(de, cfg)
             
             # 检查退出
-            exit_result = position.check_exit(price, bars_held, max_hold_bars)
+            exit_result = position.try_exit(price, bars_held, max_hold_bars)
             if exit_result:
                 reason, pnl = exit_result
                 trades.append({
@@ -254,7 +154,7 @@ def run_backtest(coin: str = 'BTC', days: int = 90, dynamic_regime: bool = True,
         
         # 信号检测（无持仓时）
         if position is None:
-            signal = detect_signal_from_candles(candles_30m, candles_4h, i, cfg)
+            signal = detect_signal(candles_30m, candles_4h, i, cfg)
             if signal:
                 de = compute_de_for_date(candles_1d, bar_time, cfg.strategy.de_lookback_days)
                 if de is not None:

@@ -17,6 +17,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from luckytrader.signal import analyze, get_recent_fills, get_candles
 from luckytrader.regime import compute_de, get_regime_params
+from luckytrader.strategy import should_tighten_tp, compute_tp_price, compute_pnl_pct
 from luckytrader.trade import (
     get_account_info, get_market_price, get_open_orders_detailed,
     place_market_order, place_stop_loss, place_take_profit, cancel_order,
@@ -678,19 +679,16 @@ def reeval_regime_tp(position):
         print(f"⚠️ DE unavailable, skipping regime re-eval (keeping entry params)")
         return None
     
-    new_params = get_regime_params(de, _cfg)
-    new_tp_pct = new_params['tp_pct']
-    new_regime = new_params['regime']
-    
-    # 只收紧不放松
-    if new_tp_pct >= old_tp_pct:
+    # 用 strategy.should_tighten_tp() — 和回测共用同一判断逻辑
+    new_tp_pct = should_tighten_tp(old_tp_pct, de, _cfg)
+    if new_tp_pct is None:
         return None
     
+    new_params = get_regime_params(de, _cfg)
+    new_regime = new_params['regime']
+    
     # TP 需要收紧
-    if is_long:
-        new_tp_price = round(entry * (1 + new_tp_pct))
-    else:
-        new_tp_price = round(entry * (1 - new_tp_pct))
+    new_tp_price = compute_tp_price(entry, new_tp_pct, is_long)
     
     print(f"🔄 Regime 变化: {old_regime}→{new_regime} (DE={de:.3f}), TP 收紧 {old_tp_pct*100:.0f}%→{new_tp_pct*100:.0f}%")
     print(f"   新 TP: ${new_tp_price:,.2f}")
