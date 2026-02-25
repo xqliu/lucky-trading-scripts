@@ -31,6 +31,20 @@ VOLUME_UP = '#00d26a55'
 VOLUME_DOWN = '#f45b6955'
 TEXT_COLOR = '#e0e0e0'
 ENTRY_COLOR = '#ffa500'
+MACD_COLOR = '#ffd700'
+SIGNAL_COLOR = '#ff6b9d'
+HIST_UP_COLOR = '#00d26a88'
+HIST_DOWN_COLOR = '#f45b6988'
+
+
+def compute_macd(closes, fast=12, slow=26, signal=9):
+    """计算 MACD (fast EMA - slow EMA), signal line, histogram"""
+    ema_fast = ema(closes, fast)
+    ema_slow = ema(closes, slow)
+    macd_line = [f - s for f, s in zip(ema_fast, ema_slow)]
+    signal_line = ema(macd_line, signal)
+    histogram = [m - s for m, s in zip(macd_line, signal_line)]
+    return macd_line, signal_line, histogram
 
 
 def get_candles_raw(coin='BTC', interval='30m', count=60):
@@ -127,13 +141,20 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
         except:
             pass
     
+    # MACD（用更多数据避免前几根不准）
+    macd_line_full, signal_line_full, histogram_full = compute_macd(all_closes)
+    macd_line = macd_line_full[offset:]
+    signal_line = signal_line_full[offset:]
+    histogram = histogram_full[offset:]
+    
     # ====== 绘图 ======
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8),
-                                     gridspec_kw={'height_ratios': [3.5, 1]},
+    fig, (ax1, ax_macd, ax2) = plt.subplots(3, 1, figsize=(14, 9),
+                                     gridspec_kw={'height_ratios': [3.5, 1.2, 1]},
                                      facecolor=BG_COLOR)
     fig.subplots_adjust(hspace=0.08, left=0.08, right=0.95, top=0.92, bottom=0.08)
     
     ax1.set_facecolor(BG_COLOR)
+    ax_macd.set_facecolor(BG_COLOR)
     ax2.set_facecolor(BG_COLOR)
     
     # K线
@@ -201,6 +222,17 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
             ax1.text(times[-1] + timedelta(minutes=10), tp, f'TP ${tp:,.0f}',
                     color=UP_COLOR, fontsize=6, va='center', alpha=0.7)
     
+    # MACD 子图
+    ax_macd.plot(times, macd_line, color=MACD_COLOR, linewidth=1, label='MACD')
+    ax_macd.plot(times, signal_line, color=SIGNAL_COLOR, linewidth=1, label='Signal')
+    ax_macd.axhline(y=0, color=GRID_COLOR, linewidth=0.5)
+    for i in range(len(times)):
+        color = HIST_UP_COLOR if histogram[i] >= 0 else HIST_DOWN_COLOR
+        ax_macd.bar(times[i], histogram[i], width=width, color=color)
+    ax_macd.set_ylabel('MACD', color=TEXT_COLOR, fontsize=8)
+    ax_macd.legend(loc='upper left', fontsize=6, facecolor=BG_COLOR, edgecolor=GRID_COLOR,
+                   labelcolor=TEXT_COLOR)
+    
     # 成交量
     for i in range(len(candles)):
         color = VOLUME_UP if closes[i] >= opens[i] else VOLUME_DOWN
@@ -224,7 +256,7 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
               labelcolor=TEXT_COLOR)
     
     # 网格和轴
-    for ax in [ax1, ax2]:
+    for ax in [ax1, ax_macd, ax2]:
         ax.grid(True, color=GRID_COLOR, linewidth=0.3, alpha=0.5)
         ax.tick_params(colors=TEXT_COLOR, labelsize=7)
         ax.spines['top'].set_visible(False)
@@ -233,6 +265,7 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
         ax.spines['left'].set_color(GRID_COLOR)
     
     ax1.tick_params(labelbottom=False)
+    ax_macd.tick_params(labelbottom=False)
     ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M', tz=timezone.utc))
     plt.setp(ax2.xaxis.get_majorticklabels(), rotation=30, ha='right')
     
@@ -252,6 +285,14 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
     
     fig.savefig(output_path, dpi=150, facecolor=BG_COLOR)
     plt.close(fig)
+    
+    # 无损压缩 PNG（oxipng -o4 约省 25%）
+    import subprocess as _sp
+    try:
+        _sp.run(['oxipng', '-o', '4', '--strip', 'safe', '-q', output_path],
+                timeout=10, check=False)
+    except FileNotFoundError:
+        pass  # oxipng 没装就跳过
     
     return output_path
 

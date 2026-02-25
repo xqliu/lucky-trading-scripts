@@ -645,6 +645,145 @@ def check_sl_tp_orders(coin, position):
                 tp_exists = True
     return sl_exists, tp_exists
 
+def reeval_regime_tp(position):
+    """动态重估 regime，如果 TP 需要收紧则调整链上订单。
+    
+    核心逻辑：趋势市开仓 (TP=7%) → 持仓期间变横盘 (TP=2%) → 收紧 TP。
+    只收紧不放松：横盘开仓后变趋势不放大 TP（已锚定的 range 参数更安全）。
+    SL 不动：只调 TP，SL 由 trailing stop 管理。
+    
+    Returns: dict with action taken, or None if no change.
+    """
+    coin = position["coin"]
+    entry = position["entry_price"]
+    size = abs(position["size"])
+    is_long = position["direction"] == "LONG"
+    old_tp_pct = position.get("regime_tp_pct", TAKE_PROFIT_PCT)
+    old_regime = position.get("regime", "unknown")
+    
+    # 重新计算 DE
+    try:
+        info = Info(skip_ws=True)
+        import time as _time
+        end = int(_time.time() * 1000)
+        start = end - 15 * 24 * 3600 * 1000
+        candles_1d = info.candles_snapshot(coin, "1d", start, end)
+        de = compute_de(candles_1d, _cfg.strategy.de_lookback_days)
+    except Exception as e:
+        print(f"⚠️ Regime re-eval failed (API error): {e}")
+        return None
+    
+    # DE 无法计算时（API 数据不足/异常）→ 不调整，保持原参数
+    if de is None:
+        print(f"⚠️ DE unavailable, skipping regime re-eval (keeping entry params)")
+        return None
+    
+    new_params = get_regime_params(de, _cfg)
+    new_tp_pct = new_params['tp_pct']
+    new_regime = new_params['regime']
+    
+    # 只收紧不放松
+    if new_tp_pct >= old_tp_pct:
+        return None
+    
+    # TP 需要收紧
+    if is_long:
+        new_tp_price = round(entry * (1 + new_tp_pct))
+    else:
+        new_tp_price = round(entry * (1 - new_tp_pct))
+    
+    print(f"🔄 Regime 变化: {old_regime}→{new_regime} (DE={de:.3f}), TP 收紧 {old_tp_pct*100:.0f}%→{new_tp_pct*100:.0f}%")
+    print(f"   新 TP: ${new_tp_price:,.2f}")
+    
+    # 检查当前价是否已经超过新 TP（浮盈已超额）
+    try:
+        current_price = get_market_price(coin)
+        if is_long and current_price >= new_tp_price:
+            print(f"   💰 当前价 ${current_price:,.0f} 已超过新 TP ${new_tp_price:,.0f}，市价平仓")
+            from luckytrader.trade import place_market_order
+            place_market_order(coin, size, is_buy=False, reduce_only=True)
+            # 记录交易 + 清理状态
+            pnl_pct = (current_price - entry) / entry * 100
+            record_trade_result(pnl_pct, "LONG", coin, "REGIME_TP")
+            log_trade("CLOSED_BY_REGIME", coin, "LONG", size, current_price, None, None,
+                      f"Regime {old_regime}→{new_regime}, TP收紧触发平仓, PnL {pnl_pct:+.2f}%")
+            # 取消所有挂单（SL/TP）
+            try:
+                for o in get_open_orders_detailed(coin):
+                    if o.get("isTrigger"):
+                        cancel_order(coin, o["oid"])
+            except Exception:
+                pass
+            save_state({"position": None})
+            return {"action": "CLOSED_BY_REGIME", "old_regime": old_regime, "new_regime": new_regime,
+                    "old_tp_pct": old_tp_pct, "new_tp_pct": new_tp_pct, "close_price": current_price, "de": de}
+        elif not is_long and current_price <= new_tp_price:
+            print(f"   💰 当前价 ${current_price:,.0f} 已超过新 TP ${new_tp_price:,.0f}，市价平仓")
+            from luckytrader.trade import place_market_order
+            place_market_order(coin, size, is_buy=True, reduce_only=True)
+            # 记录交易 + 清理状态
+            pnl_pct = (entry - current_price) / entry * 100
+            record_trade_result(pnl_pct, "SHORT", coin, "REGIME_TP")
+            log_trade("CLOSED_BY_REGIME", coin, "SHORT", size, current_price, None, None,
+                      f"Regime {old_regime}→{new_regime}, TP收紧触发平仓, PnL {pnl_pct:+.2f}%")
+            # 取消所有挂单（SL/TP）
+            try:
+                for o in get_open_orders_detailed(coin):
+                    if o.get("isTrigger"):
+                        cancel_order(coin, o["oid"])
+            except Exception:
+                pass
+            save_state({"position": None})
+            return {"action": "CLOSED_BY_REGIME", "old_regime": old_regime, "new_regime": new_regime,
+                    "old_tp_pct": old_tp_pct, "new_tp_pct": new_tp_pct, "close_price": current_price, "de": de}
+    except Exception as e:
+        print(f"⚠️ 价格检查/市价平仓失败: {e}")
+        return None
+    
+    # 取消旧 TP 单
+    try:
+        orders = get_open_orders_detailed(coin)
+        for o in orders:
+            if o.get("isTrigger") and "Take" in o.get("orderType", ""):
+                cancel_order(coin, o["oid"])
+                print(f"   取消旧 TP 单: oid={o['oid']}")
+    except Exception as e:
+        print(f"⚠️ 取消旧 TP 失败: {e}")
+        return None
+    
+    # 挂新 TP 单
+    try:
+        place_take_profit(coin, size, new_tp_price, is_long)
+        print(f"   ✅ 新 TP 已挂: ${new_tp_price:,.2f}")
+    except Exception as e:
+        print(f"❌ 新 TP 挂单失败: {e}，尝试恢复旧 TP")
+        old_tp_price = round(entry * (1 - old_tp_pct)) if not is_long else round(entry * (1 + old_tp_pct))
+        try:
+            place_take_profit(coin, size, old_tp_price, is_long)
+            print(f"   ✅ 旧 TP 已恢复: ${old_tp_price:,.2f}")
+        except Exception as e2:
+            print(f"   🚨 旧 TP 恢复也失败: {e2}，下次 fix_sl_tp 会补")
+        return None
+    
+    # 更新 position_state
+    state = load_state()
+    if state.get("position"):
+        state["position"]["regime"] = new_regime
+        state["position"]["regime_tp_pct"] = new_tp_pct
+        state["position"]["tp_price"] = new_tp_price
+        save_state(state)
+    
+    return {
+        "action": "TP_TIGHTENED",
+        "old_regime": old_regime,
+        "new_regime": new_regime,
+        "old_tp_pct": old_tp_pct,
+        "new_tp_pct": new_tp_pct,
+        "new_tp_price": new_tp_price,
+        "de": de,
+    }
+
+
 def fix_sl_tp(position):
     """修复缺失的SL/TP — 使用开仓时的 regime 参数（不用硬编码常量）"""
     coin = position["coin"]

@@ -363,6 +363,8 @@ class TradeExecutor:
         self.position_check_interval = 60  # 1分钟检查一次移动止损
         self._last_position_check = 0
         self._position_check_cooldown = 30  # 每 30 秒检查一次持仓状态
+        self._last_regime_check = 0
+        self._regime_check_interval = 3600  # DE 基于日线，每小时重算一次足够
 
     async def execute_signal(self, signal_result: Dict) -> Dict:
         """执行交易信号——直接开仓，不重新分析（async，不阻塞事件循环）"""
@@ -506,6 +508,27 @@ class TradeExecutor:
                 if alerts:
                     for alert in alerts:
                         logger.warning(f"Trailing stop alert: {alert}")
+
+                # 动态 regime 重估：如果市场从趋势变横盘，收紧 TP（每小时一次）
+                now_ts = time.time()
+                try:
+                    state = await asyncio.to_thread(execute.load_state)
+                    pos = state.get("position")
+                    if (pos and pos.get("regime_tp_pct", 0) > 0.02
+                            and now_ts - self._last_regime_check >= self._regime_check_interval):
+                        # 只在 TP > 2%（即趋势市开仓）时检查
+                        self._last_regime_check = now_ts
+                        result = await asyncio.to_thread(execute.reeval_regime_tp, pos)
+                        if result:
+                            logger.warning(f"Regime re-eval: {result['old_regime']}→{result['new_regime']}, "
+                                         f"TP {result['old_tp_pct']*100:.0f}%→{result['new_tp_pct']*100:.0f}%")
+                            # 日志输出（journalctl 可见）
+                            print(f"🔄 Regime 动态调整: DE={result['de']:.3f} "
+                                  f"{result['old_regime']}→{result['new_regime']} "
+                                  f"TP {result['old_tp_pct']*100:.0f}%→{result['new_tp_pct']*100:.0f}% "
+                                  f"(${result['new_tp_price']:,.0f})")
+                except Exception as e:
+                    logger.error(f"Regime re-eval error: {e}")
 
                 await asyncio.sleep(self.position_check_interval)
 
