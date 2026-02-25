@@ -61,6 +61,8 @@ class StrategyConfig:
     range_bars: int = 48
     de_threshold: float = 0.25      # Directional Efficiency threshold (trend vs range)
     de_lookback_days: int = 7       # Days window for DE calculation
+    early_validation_bars: int = 2  # 1h方向确认：开仓后第N根30m检查MFE
+    early_validation_mfe: float = 0.8  # MFE阈值(%)：低于此值提前出局
 
 @dataclass(frozen=True)
 class RiskConfig:

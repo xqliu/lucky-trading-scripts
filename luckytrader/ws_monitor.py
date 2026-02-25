@@ -365,6 +365,7 @@ class TradeExecutor:
         self._position_check_cooldown = 30  # 每 30 秒检查一次持仓状态
         self._last_regime_check = 0
         self._regime_check_interval = 3600  # DE 基于日线，每小时重算一次足够
+        self._early_validation_done = False  # 1h方向确认是否已完成
 
     async def execute_signal(self, signal_result: Dict) -> Dict:
         """执行交易信号——直接开仓，不重新分析（async，不阻塞事件循环）"""
@@ -383,6 +384,8 @@ class TradeExecutor:
             result = await asyncio.to_thread(execute.open_position, signal, signal_result)
 
             if result.get("action") == "OPENED":
+                # 重置早期验证标志
+                self._early_validation_done = False
                 # 启动移动止损监控
                 asyncio.create_task(self.start_trailing_monitor())
 
@@ -501,6 +504,91 @@ class TradeExecutor:
                 if not await asyncio.to_thread(self.has_position):
                     logger.info("No position found, stopping trailing monitor")
                     break
+
+                # ─── 1小时方向确认（早期验证）───
+                if not self._early_validation_done:
+                    try:
+                        state = await asyncio.to_thread(execute.load_state)
+                        pos = state.get("position")
+                        if pos and pos.get("entry_time"):
+                            from datetime import datetime, timezone
+                            entry_time = datetime.fromisoformat(pos["entry_time"])
+                            elapsed_min = (datetime.now(timezone.utc) - entry_time).total_seconds() / 60
+                            ev_bars = execute._cfg.strategy.early_validation_bars
+                            ev_minutes = ev_bars * 30  # 每根30m = 30分钟
+                            ev_mfe_thr = execute._cfg.strategy.early_validation_mfe
+
+                            if elapsed_min >= ev_minutes:
+                                # 时间到了，检查 MFE
+                                self._early_validation_done = True
+                                entry_price = pos["entry_price"]
+                                direction = pos["direction"]
+                                coin = pos.get("coin", "BTC")
+
+                                # 获取开仓后的K线数据计算 MFE
+                                from hyperliquid.info import Info as _Info
+                                _info = _Info(skip_ws=True)
+                                _end = int(time.time() * 1000)
+                                _start = int(entry_time.timestamp() * 1000)
+                                candles = _info.candles_snapshot(coin, '30m', _start, _end)
+
+                                if candles and len(candles) >= 2:
+                                    highs = [float(c['h']) for c in candles[1:]]  # 跳过入场那根
+                                    lows = [float(c['l']) for c in candles[1:]]
+                                    if direction == 'LONG':
+                                        mfe = (max(highs) - entry_price) / entry_price * 100
+                                    else:
+                                        mfe = (entry_price - min(lows)) / entry_price * 100
+
+                                    logger.info(f"Early validation: {direction} @ ${entry_price:,.0f}, "
+                                              f"elapsed {elapsed_min:.0f}min, MFE={mfe:.3f}%, threshold={ev_mfe_thr}%")
+
+                                    if mfe < ev_mfe_thr:
+                                        # 假突破，提前出局
+                                        logger.warning(f"❌ Early validation FAILED: MFE {mfe:.3f}% < {ev_mfe_thr}%, closing position")
+                                        print(f"❌ 1h方向确认失败: MFE {mfe:.3f}% < {ev_mfe_thr}%, 提前出局")
+
+                                        current_price = execute.get_market_price(coin)
+                                        size = abs(pos["size"])
+                                        is_long = direction == "LONG"
+
+                                        # 市价平仓
+                                        from luckytrader.trade import place_market_order, cancel_order
+                                        from luckytrader.execute import get_open_orders_detailed
+                                        place_market_order(coin, size, is_buy=not is_long, reduce_only=True)
+
+                                        # 计算盈亏
+                                        if is_long:
+                                            pnl_pct = (current_price - entry_price) / entry_price * 100
+                                        else:
+                                            pnl_pct = (entry_price - current_price) / entry_price * 100
+
+                                        # 取消所有挂单
+                                        try:
+                                            for o in get_open_orders_detailed(coin):
+                                                if o.get("isTrigger"):
+                                                    cancel_order(coin, o["oid"])
+                                        except Exception:
+                                            pass
+
+                                        # 记录 + 通知
+                                        execute.record_trade_result(pnl_pct, direction, coin, "EARLY_EXIT")
+                                        execute.log_trade("EARLY_EXIT", coin, direction, size, current_price, None, None,
+                                                         f"1h方向确认失败 MFE={mfe:.3f}%<{ev_mfe_thr}%, PnL {pnl_pct:+.2f}%")
+                                        execute.save_state({"position": None})
+                                        execute.notify_discord(
+                                            f"❌ **提前出局** {direction} {coin} — 1h方向确认失败\n"
+                                            f"💰 入场: ${entry_price:,.2f} → 平仓: ~${current_price:,.2f}\n"
+                                            f"📊 盈亏: {pnl_pct:+.2f}% | MFE: {mfe:.3f}% < {ev_mfe_thr}%\n"
+                                            f"<@111111111111111111> <@222222222222222222>")
+
+                                        logger.info("Position closed by early validation, stopping trailing monitor")
+                                        break
+                                    else:
+                                        logger.info(f"✅ Early validation PASSED: MFE {mfe:.3f}% >= {ev_mfe_thr}%")
+                                        print(f"✅ 1h方向确认通过: MFE {mfe:.3f}% >= {ev_mfe_thr}%")
+                    except Exception as e:
+                        logger.error(f"Early validation error: {e}")
 
                 # 在线程中调用同步 trailing 模块，避免阻塞事件循环
                 alerts = await asyncio.to_thread(trailing.main)
