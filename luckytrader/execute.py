@@ -181,12 +181,47 @@ def log_trade(action, coin, direction, size, price, sl=None, tp=None, reason="")
     with open(TRADES_FILE, 'a') as f:
         f.write(entry)
 
+_LOCK_FILE = STATE_FILE.parent / ".execute.lock"
+
+def _acquire_lock():
+    """文件锁：防止 cron + 手动同时开仓（竞态条件）。"""
+    import fcntl
+    fd = open(_LOCK_FILE, "w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except OSError:
+        fd.close()
+        return None
+
+def _release_lock(fd):
+    if fd:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        fd.close()
+        try:
+            _LOCK_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+
 def execute(dry_run=False):
     """主执行流程。dry_run=True 时只分析不下单。"""
     mode = "🧪 DRY RUN" if dry_run else "🔴 LIVE"
     _CST = timezone(timedelta(hours=8))
     print(f"[{datetime.now(_CST).strftime('%H:%M:%S CST')}] {mode} 执行信号检查...")
+
+    # 防并发：文件锁
+    lock_fd = _acquire_lock()
+    if lock_fd is None:
+        print("⚠️ 另一个 execute 进程正在运行，跳过本次执行")
+        return {"action": "SKIPPED", "reason": "lock_held"}
     
+    try:
+        return _execute_inner(dry_run, mode, _CST)
+    finally:
+        _release_lock(lock_fd)
+
+def _execute_inner(dry_run, mode, _CST):
     # 1. 检查是否有持仓
     position = get_position("BTC")
     state = load_state()
