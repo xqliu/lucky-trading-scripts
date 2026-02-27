@@ -366,10 +366,16 @@ class TradeExecutor:
         self._last_regime_check = 0
         self._regime_check_interval = 3600  # DE 基于日线，每小时重算一次足够
         self._early_validation_done = False  # 1h方向确认是否已完成
+        self._opening_lock = False  # 防止竞态条件导致重复开仓
 
     async def execute_signal(self, signal_result: Dict) -> Dict:
         """执行交易信号——直接开仓，不重新分析（async，不阻塞事件循环）"""
         try:
+            # 防竞态：如果正在开仓中，直接跳过
+            if self._opening_lock:
+                logger.info("Opening lock active, skipping duplicate signal")
+                return {"action": "SKIP", "reason": "opening_lock"}
+
             # 检查当前是否有持仓（async，避免阻塞事件循环）
             if await asyncio.to_thread(self.has_position):
                 logger.info("Already has position, skipping signal")
@@ -379,9 +385,15 @@ class TradeExecutor:
             if signal == "HOLD":
                 return {"action": "HOLD"}
 
-            # 在线程中执行同步开仓操作，避免阻塞事件循环
+            # 加锁，防止并发开仓
+            self._opening_lock = True
             logger.info(f"Executing {signal} signal (direct open, no re-analysis)...")
-            result = await asyncio.to_thread(execute.open_position, signal, signal_result)
+
+            try:
+                result = await asyncio.to_thread(execute.open_position, signal, signal_result)
+            finally:
+                # 无论成功失败都释放锁
+                self._opening_lock = False
 
             if result.get("action") == "OPENED":
                 # 重置早期验证标志
@@ -392,6 +404,7 @@ class TradeExecutor:
             return result
 
         except Exception as e:
+            self._opening_lock = False  # 异常时也要释放锁
             logger.error(f"Trade execution error: {e}")
             return {"action": "ERROR", "error": str(e)}
 
