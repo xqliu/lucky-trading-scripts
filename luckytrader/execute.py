@@ -221,6 +221,27 @@ def execute(dry_run=False):
     finally:
         _release_lock(lock_fd)
 
+_COOLDOWN_FILE = STATE_FILE.parent / ".last_open_ts"
+_COOLDOWN_SECONDS = 1800  # 30 分钟内不允许重复开仓
+
+def _check_cooldown():
+    """开仓后 30 分钟内禁止再次开仓，防止 cron+手动重复。"""
+    if _COOLDOWN_FILE.exists():
+        try:
+            last_ts = float(_COOLDOWN_FILE.read_text().strip())
+            elapsed = time.time() - last_ts
+            if elapsed < _COOLDOWN_SECONDS:
+                remaining = _COOLDOWN_SECONDS - elapsed
+                print(f"⚠️ 冷却中：上次开仓 {elapsed:.0f}s 前，还需等待 {remaining:.0f}s")
+                return False
+        except Exception:
+            pass
+    return True
+
+def _set_cooldown():
+    """记录开仓时间戳。"""
+    _COOLDOWN_FILE.write_text(str(time.time()))
+
 def _execute_inner(dry_run, mode, _CST):
     # 1. 检查是否有持仓
     position = get_position("BTC")
@@ -319,7 +340,21 @@ def _execute_inner(dry_run, mode, _CST):
     # 3. 有信号，执行开仓
     if dry_run:
         return dry_run_open(signal, result)
-    return open_position(signal, result)
+
+    # 冷却检查：防止 cron + 手动重复开仓
+    if not _check_cooldown():
+        return {"action": "SKIPPED", "reason": "cooldown_active"}
+
+    # 开仓前再次确认链上无持仓（double-check）
+    position_recheck = get_position("BTC")
+    if position_recheck:
+        print(f"⚠️ 开仓前二次检查发现已有持仓，跳过")
+        return {"action": "HOLD", "reason": "position_exists_on_recheck"}
+
+    result = open_position(signal, result)
+    if result.get("action") in ("OPENED", "OPEN"):
+        _set_cooldown()
+    return result
 
 def dry_run_open(signal, analysis):
     """Dry run: 计算开仓参数但不下单"""
