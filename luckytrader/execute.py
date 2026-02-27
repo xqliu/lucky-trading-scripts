@@ -341,20 +341,13 @@ def _execute_inner(dry_run, mode, _CST):
     if dry_run:
         return dry_run_open(signal, result)
 
-    # 冷却检查：防止 cron + 手动重复开仓
-    if not _check_cooldown():
-        return {"action": "SKIPPED", "reason": "cooldown_active"}
-
-    # 开仓前再次确认链上无持仓（double-check）
+    # 开仓前再次确认链上无持仓（防重复开仓）
     position_recheck = get_position("BTC")
     if position_recheck:
         print(f"⚠️ 开仓前二次检查发现已有持仓，跳过")
         return {"action": "HOLD", "reason": "position_exists_on_recheck"}
 
-    result = open_position(signal, result)
-    if result.get("action") in ("OPENED", "OPEN"):
-        _set_cooldown()
-    return result
+    return open_position(signal, result)
 
 def dry_run_open(signal, analysis):
     """Dry run: 计算开仓参数但不下单"""
