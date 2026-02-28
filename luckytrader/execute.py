@@ -25,7 +25,7 @@ from luckytrader.trade import (
 )
 from hyperliquid.info import Info
 from hyperliquid.utils import constants
-from luckytrader.config import get_config
+from luckytrader.config import get_config, get_coin_config, TRADING_COINS
 
 # === 系统参数 — 从 config/params.toml 加载 ===
 _cfg = get_config()
@@ -44,6 +44,18 @@ STATE_FILE = _WORKSPACE_DIR / "memory" / "trading" / "position_state.json"
 TRADES_FILE = _WORKSPACE_DIR / "memory" / "trading" / "TRADES.md"
 TRADE_LOG_FILE = _WORKSPACE_DIR / "memory" / "trading" / "trade_results.json"
 CONSEC_LOSS_THRESHOLD = _cfg.optimization.consec_loss_threshold
+
+
+def _get_coin_params(coin: str):
+    """Get per-coin risk/strategy params (convenience wrapper)."""
+    cc = get_coin_config(coin)
+    return {
+        'stop_loss_pct': cc.stop_loss_pct,
+        'take_profit_pct': cc.take_profit_pct,
+        'max_hold_hours': cc.max_hold_hours,
+        'position_ratio': cc.position_ratio,
+        'max_single_loss': cc.max_single_loss,
+    }
 
 def load_trade_log():
     if TRADE_LOG_FILE.exists():
@@ -108,18 +120,76 @@ def trigger_optimization():
     except Exception as e:
         print(f"触发优化失败: {e}")
 
-def load_state():
+def _migrate_state(data: dict) -> dict:
+    """Migrate old single-coin format to multi-coin format.
+    
+    Old: {"position": {...}}
+    New: {"BTC": {"position": ...}, "ETH": {"position": None}}
+    """
+    if "position" in data and not any(c in data for c in TRADING_COINS):
+        old_pos = data.get("position")
+        migrated = {c: {"position": None} for c in TRADING_COINS}
+        if old_pos:
+            coin = old_pos.get("coin", "BTC")
+            migrated[coin] = {"position": old_pos}
+        return migrated
+    return data
+
+
+def load_state(coin: str = None):
+    """Load position state. If coin is specified, return that coin's state only.
+    
+    For backward compatibility: if coin is None, returns the full multi-coin dict.
+    """
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE) as f:
-                return json.load(f)
+                data = json.load(f)
         except (json.JSONDecodeError, ValueError):
             print(f"⚠️ position_state.json 损坏，重置为空状态")
-            return {"position": None}
-    return {"position": None}
+            data = {}
+    else:
+        data = {}
 
-def save_state(state):
+    data = _migrate_state(data)
+    
+    # Ensure all coins exist
+    for c in TRADING_COINS:
+        if c not in data:
+            data[c] = {"position": None}
+
+    if coin:
+        return data.get(coin, {"position": None})
+    return data
+
+
+def save_state(state, coin: str = None):
+    """Save position state. If coin is specified, only update that coin's state.
+    
+    For backward compatibility: if coin is None and state has old format {"position": ...},
+    auto-detect and handle.
+    """
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    
+    if coin:
+        # Update only the specified coin
+        full_state = load_state()
+        full_state[coin] = state
+        state = full_state
+    elif "position" in state and not any(c in state for c in TRADING_COINS):
+        # Old-format call: save_state({"position": None}) — migrate on the fly
+        # Detect which coin this is about from the position data
+        pos = state.get("position")
+        full_state = load_state()
+        if pos:
+            c = pos.get("coin", "BTC")
+            full_state[c] = state
+        else:
+            # Clearing position — we don't know which coin, so this is a legacy call
+            # Keep existing state (caller should use save_state(state, coin) instead)
+            pass
+        state = full_state
+    
     tmp_file = STATE_FILE.with_suffix('.tmp')
     with open(tmp_file, 'w') as f:
         json.dump(state, f, indent=2)
@@ -181,14 +251,16 @@ def log_trade(action, coin, direction, size, price, sl=None, tp=None, reason="")
     with open(TRADES_FILE, 'a') as f:
         f.write(entry)
 
-_LOCK_FILE = STATE_FILE.parent / ".execute.lock"
+_LOCK_DIR = STATE_FILE.parent
 
-def _acquire_lock():
-    """文件锁：防止 cron + 手动同时开仓（竞态条件）。"""
+def _acquire_lock(coin: str = "BTC"):
+    """Per-coin file lock: prevent concurrent execution for the same coin."""
     import fcntl
-    fd = open(_LOCK_FILE, "w")
+    lock_file = _LOCK_DIR / f".execute_{coin}.lock"
+    fd = open(lock_file, "w")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fd._lock_path = lock_file  # stash path for cleanup
         return fd
     except OSError:
         fd.close()
@@ -198,77 +270,104 @@ def _release_lock(fd):
     if fd:
         import fcntl
         fcntl.flock(fd, fcntl.LOCK_UN)
+        lock_path = getattr(fd, '_lock_path', None)
         fd.close()
-        try:
-            _LOCK_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
+        if lock_path:
+            try:
+                lock_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
-def execute(dry_run=False):
-    """主执行流程。dry_run=True 时只分析不下单。"""
+def execute(dry_run=False, coin=None):
+    """主执行流程。dry_run=True 时只分析不下单。
+    
+    Args:
+        dry_run: 只分析不下单
+        coin: 指定币种。None = 遍历所有 TRADING_COINS。
+    """
+    coins = [coin] if coin else TRADING_COINS
+    results = {}
+    
+    for c in coins:
+        result = execute_coin(c, dry_run)
+        results[c] = result
+    
+    # For backward compatibility: if single coin, return its result directly
+    if coin:
+        return results[coin]
+    return results
+
+
+def execute_coin(coin: str, dry_run=False):
+    """Execute signal check for a single coin."""
     mode = "🧪 DRY RUN" if dry_run else "🔴 LIVE"
     _CST = timezone(timedelta(hours=8))
-    print(f"[{datetime.now(_CST).strftime('%H:%M:%S CST')}] {mode} 执行信号检查...")
+    print(f"[{datetime.now(_CST).strftime('%H:%M:%S CST')}] {mode} {coin} 执行信号检查...")
 
-    # 防并发：文件锁
-    lock_fd = _acquire_lock()
+    # 防并发：per-coin 文件锁
+    lock_fd = _acquire_lock(coin)
     if lock_fd is None:
-        print("⚠️ 另一个 execute 进程正在运行，跳过本次执行")
+        print(f"⚠️ 另一个 {coin} execute 进程正在运行，跳过")
         return {"action": "SKIPPED", "reason": "lock_held"}
     
     try:
-        return _execute_inner(dry_run, mode, _CST)
+        return _execute_inner(dry_run, mode, _CST, coin)
     finally:
         _release_lock(lock_fd)
 
-_COOLDOWN_FILE = STATE_FILE.parent / ".last_open_ts"
 _COOLDOWN_SECONDS = 1800  # 30 分钟内不允许重复开仓
 
-def _check_cooldown():
-    """开仓后 30 分钟内禁止再次开仓，防止 cron+手动重复。"""
-    if _COOLDOWN_FILE.exists():
+def _cooldown_file(coin: str) -> Path:
+    return STATE_FILE.parent / f".last_open_ts_{coin}"
+
+def _check_cooldown(coin: str = "BTC"):
+    """开仓后 30 分钟内禁止再次开仓，防止 cron+手动重复。Per-coin."""
+    cf = _cooldown_file(coin)
+    if cf.exists():
         try:
-            last_ts = float(_COOLDOWN_FILE.read_text().strip())
+            last_ts = float(cf.read_text().strip())
             elapsed = time.time() - last_ts
             if elapsed < _COOLDOWN_SECONDS:
                 remaining = _COOLDOWN_SECONDS - elapsed
-                print(f"⚠️ 冷却中：上次开仓 {elapsed:.0f}s 前，还需等待 {remaining:.0f}s")
+                print(f"⚠️ {coin} 冷却中：上次开仓 {elapsed:.0f}s 前，还需等待 {remaining:.0f}s")
                 return False
         except Exception:
             pass
     return True
 
-def _set_cooldown():
+def _set_cooldown(coin: str = "BTC"):
     """记录开仓时间戳。"""
-    _COOLDOWN_FILE.write_text(str(time.time()))
+    _cooldown_file(coin).write_text(str(time.time()))
 
-def _execute_inner(dry_run, mode, _CST):
+def _execute_inner(dry_run, mode, _CST, coin="BTC"):
+    """Execute for a single coin."""
+    coin_params = _get_coin_params(coin)
+    max_hold_hours = coin_params['max_hold_hours']
+    
     # 1. 检查是否有持仓
-    position = get_position("BTC")
-    state = load_state()
+    position = get_position(coin)
+    state = load_state(coin)
     
     # 检查：state里有持仓但链上没了 → SL/TP被触发了
     if not position and state.get("position"):
         sp = state["position"]
-        print(f"⚡ 持仓已被平仓（SL/TP触发）: {sp['direction']} {sp['coin']}")
-        # 计算盈亏（优先使用实际平仓成交价，回退到市场价）
+        print(f"⚡ {coin} 持仓已被平仓（SL/TP触发）: {sp['direction']}")
         entry = sp["entry_price"]
         expected_close_side = "SELL" if sp["direction"] == "LONG" else "BUY"
         fills = get_recent_fills(limit=5)
         close_fill = next(
-            (f for f in fills if f.get("coin") == sp["coin"] and f.get("side") == expected_close_side),
+            (f for f in fills if f.get("coin") == sp.get("coin", coin) and f.get("side") == expected_close_side),
             None
         )
         if close_fill:
             current_price = float(close_fill["price"])
         else:
-            current_price = get_market_price(sp["coin"])
+            current_price = get_market_price(coin)
         if sp["direction"] == "LONG":
             pnl_pct = (current_price - entry) / entry * 100
         else:
             pnl_pct = (entry - current_price) / entry * 100
         
-        # 判断是SL还是TP
         sl = sp.get("sl_price", 0)
         tp = sp.get("tp_price", 0)
         if sp["direction"] == "LONG":
@@ -276,89 +375,89 @@ def _execute_inner(dry_run, mode, _CST):
         else:
             reason = "TP" if current_price <= tp * 1.01 else "SL" if current_price >= sl * 0.99 else "UNKNOWN"
         
-        record_trade_result(pnl_pct, sp["direction"], sp["coin"], reason)
-        log_trade("CLOSED_BY_TRIGGER", sp["coin"], sp["direction"], sp["size"],
+        record_trade_result(pnl_pct, sp["direction"], coin, reason)
+        log_trade("CLOSED_BY_TRIGGER", coin, sp["direction"], sp["size"],
                   current_price, reason=f"{reason} 触发, PnL {pnl_pct:+.2f}%")
-        save_state({"position": None})
+        save_state({"position": None}, coin)
         print(f"  估算PnL: {pnl_pct:+.2f}%, 原因: {reason}")
         
         emoji = "🎯" if reason == "TP" else "🛑"
-        notify_discord(f"{emoji} **平仓** {sp['direction']} {sp['coin']} — {reason}触发\n💰 入场: ${sp['entry_price']:,.2f} → 平仓: ~${current_price:,.2f}\n📊 盈亏: {pnl_pct:+.2f}%")
+        notify_discord(f"{emoji} **平仓** {sp['direction']} {coin} — {reason}触发\n💰 入场: ${sp['entry_price']:,.2f} → 平仓: ~${current_price:,.2f}\n📊 盈亏: {pnl_pct:+.2f}%")
         return {"action": "CLOSED_BY_TRIGGER", "reason": reason, "pnl_pct": pnl_pct}
     
     if position:
-        print(f"当前持仓: {position['direction']} {abs(position['size'])} BTC @ ${position['entry_price']:,.2f}")
+        print(f"当前持仓: {position['direction']} {abs(position['size'])} {coin} @ ${position['entry_price']:,.2f}")
         print(f"未实现盈亏: ${position['unrealized_pnl']:,.2f}")
         
         # 检查超时平仓
         if state.get("position") and state["position"].get("entry_time"):
             entry_time = datetime.fromisoformat(state["position"]["entry_time"])
             elapsed = (datetime.now(timezone.utc) - entry_time).total_seconds() / 3600
-            print(f"持仓时间: {elapsed:.1f}h / {MAX_HOLD_HOURS}h")
+            print(f"持仓时间: {elapsed:.1f}h / {max_hold_hours}h")
             
-            if elapsed >= MAX_HOLD_HOURS:
+            if elapsed >= max_hold_hours:
                 pnl_pct = position["unrealized_pnl"] / (abs(position["size"]) * position["entry_price"]) * 100
                 if dry_run:
-                    print(f"🧪 DRY RUN: 超时 {elapsed:.1f}h，WOULD 平仓 (PnL {pnl_pct:+.2f}%)")
+                    print(f"🧪 DRY RUN: {coin} 超时 {elapsed:.1f}h，WOULD 平仓 (PnL {pnl_pct:+.2f}%)")
                     return {"action": "DRY_RUN_WOULD_TIMEOUT_CLOSE", "elapsed": elapsed, "pnl_pct": pnl_pct, "dry_run": True}
-                print(f"⏰ 超时平仓！已持仓 {elapsed:.1f}h")
+                print(f"⏰ {coin} 超时平仓！已持仓 {elapsed:.1f}h")
                 try:
-                    result = close_position(position)
+                    result = close_position(position, coin=coin)
                     if result is None:
-                        # close_position 发现链上无仓位（SL/TP 已触发），仍需记录交易结果
-                        record_trade_result(pnl_pct, position["direction"], position["coin"], "SL_TP_AUTO")
+                        record_trade_result(pnl_pct, position["direction"], coin, "SL_TP_AUTO")
                         return {"action": "STALE_STATE_CLEANED", "elapsed": elapsed}
                 except RuntimeError as e:
                     return {"action": "CLOSE_FAILED", "error": str(e)}
-                record_trade_result(pnl_pct, position["direction"], position["coin"], "TIMEOUT")
-                notify_discord(f"⏰ **超时平仓** {position['direction']} {position['coin']}\n💰 入场: ${position['entry_price']:,.2f}\n📊 盈亏: {pnl_pct:+.2f}% | 持仓 {elapsed:.1f}h")
+                record_trade_result(pnl_pct, position["direction"], coin, "TIMEOUT")
+                notify_discord(f"⏰ **超时平仓** {position['direction']} {coin}\n💰 入场: ${position['entry_price']:,.2f}\n📊 盈亏: {pnl_pct:+.2f}% | 持仓 {elapsed:.1f}h")
                 return {"action": "TIMEOUT_CLOSE", "elapsed": elapsed, "pnl_pct": pnl_pct}
         
         # 检查SL/TP是否还在
         if not dry_run:
-            sl_exists, tp_exists = check_sl_tp_orders("BTC", position)
+            sl_exists, tp_exists = check_sl_tp_orders(coin, position)
             if not sl_exists or not tp_exists:
-                print(f"⚠️ SL/TP 缺失! SL={sl_exists}, TP={tp_exists}")
+                print(f"⚠️ {coin} SL/TP 缺失! SL={sl_exists}, TP={tp_exists}")
                 print("紧急修复中...")
-                fix_sl_tp(position)
+                fix_sl_tp(position, coin=coin)
         
         return {"action": "HOLD", "position": position, "dry_run": dry_run}
     
     # 2. 无持仓，检查信号
-    result = analyze("BTC")
+    result = analyze(coin)
     if "error" in result:
-        print(f"信号检查失败: {result['error']}")
+        print(f"{coin} 信号检查失败: {result['error']}")
         return {"action": "ERROR", "error": result["error"]}
     
     signal = result["signal"]
-    print(f"信号: {signal}")
+    print(f"{coin} 信号: {signal}")
     
     if signal == "HOLD":
-        print("无信号，继续等待")
+        print(f"{coin} 无信号，继续等待")
         return {"action": "HOLD", "signal": result, "dry_run": dry_run}
     
     # 3. 有信号，执行开仓
     if dry_run:
-        return dry_run_open(signal, result)
+        return dry_run_open(signal, result, coin)
 
     # 开仓前再次确认链上无持仓（防重复开仓）
-    position_recheck = get_position("BTC")
+    position_recheck = get_position(coin)
     if position_recheck:
-        print(f"⚠️ 开仓前二次检查发现已有持仓，跳过")
+        print(f"⚠️ {coin} 开仓前二次检查发现已有持仓，跳过")
         return {"action": "HOLD", "reason": "position_exists_on_recheck"}
 
-    return open_position(signal, result)
+    return open_position(signal, result, coin)
 
-def dry_run_open(signal, analysis):
+def dry_run_open(signal, analysis, coin="BTC"):
     """Dry run: 计算开仓参数但不下单"""
-    coin = "BTC"
     price = analysis["price"]
     is_long = signal == "LONG"
+    cp = _get_coin_params(coin)
 
     # Compute DE regime to select adaptive TP/SL
     try:
-        candles_1d = get_candles("BTC", "1d", (_cfg.strategy.de_lookback_days + 3) * 24)
-        de = compute_de(candles_1d, lookback_days=_cfg.strategy.de_lookback_days)
+        cc = get_coin_config(coin)
+        candles_1d = get_candles(coin, "1d", (cc.de_lookback_days + 3) * 24)
+        de = compute_de(candles_1d, lookback_days=cc.de_lookback_days)
     except Exception as e:
         print(f"⚠️ DE计算失败，降级为默认区间参数: {e}")
         de = None
@@ -367,15 +466,15 @@ def dry_run_open(signal, analysis):
     tp_pct = regime_params['tp_pct']
     regime = regime_params['regime']
     de_str = f"{de:.3f}" if de is not None else "None"
-    print(f"🔍 Regime={regime} DE={de_str} → TP={tp_pct*100:.0f}% SL={sl_pct*100:.0f}%")
+    print(f"🔍 {coin} Regime={regime} DE={de_str} → TP={tp_pct*100:.0f}% SL={sl_pct*100:.0f}%")
     
     account = get_account_info()
     account_value = float(account["account_value"])
-    position_value = account_value * POSITION_RATIO
+    position_value = account_value * cp['position_ratio']
     
     max_loss_at_sl = position_value * sl_pct
-    if max_loss_at_sl > MAX_SINGLE_LOSS:
-        position_value = MAX_SINGLE_LOSS / sl_pct
+    if max_loss_at_sl > cp['max_single_loss']:
+        position_value = cp['max_single_loss'] / sl_pct
     
     coin_info = get_coin_info(coin)
     sz_decimals = coin_info.get("szDecimals", 5) if coin_info else 5
@@ -417,16 +516,17 @@ def dry_run_open(signal, analysis):
         "reasons": analysis.get("signal_reasons", []),
     }
 
-def open_position(signal, analysis):
+def open_position(signal, analysis, coin="BTC"):
     """开仓 + SL + TP 原子操作"""
-    coin = "BTC"
     price = analysis["price"]
     is_long = signal == "LONG"
+    cp = _get_coin_params(coin)
 
     # Compute DE regime to select adaptive TP/SL
     try:
-        candles_1d = get_candles("BTC", "1d", (_cfg.strategy.de_lookback_days + 3) * 24)
-        de = compute_de(candles_1d, lookback_days=_cfg.strategy.de_lookback_days)
+        cc = get_coin_config(coin)
+        candles_1d = get_candles(coin, "1d", (cc.de_lookback_days + 3) * 24)
+        de = compute_de(candles_1d, lookback_days=cc.de_lookback_days)
     except Exception as e:
         print(f"⚠️ DE计算失败，降级为默认区间参数: {e}")
         de = None
@@ -435,18 +535,18 @@ def open_position(signal, analysis):
     tp_pct = regime_params['tp_pct']
     regime = regime_params['regime']
     de_str = f"{de:.3f}" if de is not None else "None"
-    print(f"🔍 Regime={regime} DE={de_str} → TP={tp_pct*100:.0f}% SL={sl_pct*100:.0f}%")
+    print(f"🔍 {coin} Regime={regime} DE={de_str} → TP={tp_pct*100:.0f}% SL={sl_pct*100:.0f}%")
     
     # 计算仓位大小
     account = get_account_info()
     account_value = float(account["account_value"])
-    position_value = account_value * POSITION_RATIO
+    position_value = account_value * cp['position_ratio']
     
     # 检查单笔最大亏损限制
     max_loss_at_sl = position_value * sl_pct
-    if max_loss_at_sl > MAX_SINGLE_LOSS:
-        position_value = MAX_SINGLE_LOSS / sl_pct
-        print(f"仓位受限于最大单笔亏损 ${MAX_SINGLE_LOSS}: 仓位 ${position_value:.2f}")
+    if max_loss_at_sl > cp['max_single_loss']:
+        position_value = cp['max_single_loss'] / sl_pct
+        print(f"仓位受限于最大单笔亏损 ${cp['max_single_loss']}: 仓位 ${position_value:.2f}")
     
     # 获取精度
     coin_info = get_coin_info(coin)
@@ -545,8 +645,8 @@ def open_position(signal, analysis):
             return {"action": "EMERGENCY_CLOSE_FAILED", "error": str(close_err)}
         return {"action": "TP_FAILED_CLOSED", "error": str(e)}
     
-    # 全部成功，保存状态
-    state = {
+    # 全部成功，保存状态 (per-coin)
+    coin_state = {
         "position": {
             "coin": coin,
             "direction": signal,
@@ -555,15 +655,15 @@ def open_position(signal, analysis):
             "entry_time": datetime.now(timezone.utc).isoformat(),
             "sl_price": sl_price,
             "tp_price": tp_price,
-            "max_hold_hours": MAX_HOLD_HOURS,
-            "deadline": (datetime.now(timezone.utc) + timedelta(hours=MAX_HOLD_HOURS)).isoformat(),
+            "max_hold_hours": cp['max_hold_hours'],
+            "deadline": (datetime.now(timezone.utc) + timedelta(hours=cp['max_hold_hours'])).isoformat(),
             "regime": regime,
             "de": de,
             "regime_tp_pct": tp_pct,
             "regime_sl_pct": sl_pct,
         }
     }
-    save_state(state)
+    save_state(coin_state, coin)
 
     regime_reason = f"regime={regime} de={de_str} tp={tp_pct*100:.0f}% sl={sl_pct*100:.0f}%"
     reasons = analysis.get("signal_reasons", [])
@@ -571,14 +671,14 @@ def open_position(signal, analysis):
     log_trade("OPEN", coin, signal, actual_size, actual_entry, sl_price, tp_price, reason_text)
     
     print(f"\n✅ 开仓完成！SL=${sl_price:,.2f} TP=${tp_price:,.2f}")
-    print(f"⏰ 超时平仓时间: {state['position']['deadline']}")
+    print(f"⏰ 超时平仓时间: {coin_state['position']['deadline']}")
     
     notify_discord(
         f"🚀 **开仓** {signal} {coin}\n"
         f"💰 入场: ${actual_entry:,.2f} | 数量: {actual_size}\n"
         f"🛑 止损: ${sl_price:,.2f} (-{sl_pct*100:.0f}%) | 🎯 止盈: ${tp_price:,.2f} (+{tp_pct*100:.0f}%)\n"
         f"🔍 Regime: {regime} (DE={de_str})\n"
-        f"⏰ 最长持仓: {MAX_HOLD_HOURS}h"
+        f"⏰ 最长持仓: {cp['max_hold_hours']}h"
     )
     
     return {
@@ -588,7 +688,7 @@ def open_position(signal, analysis):
         "entry": actual_entry,
         "sl": sl_price,
         "tp": tp_price,
-        "deadline": state["position"]["deadline"],
+        "deadline": coin_state["position"]["deadline"],
         "regime": regime,
         "de": de,
         "regime_tp_pct": tp_pct,
@@ -605,7 +705,7 @@ def emergency_close(coin, size, is_long, max_retries=3):
             print(f"平仓结果 (attempt {attempt}): {json.dumps(result, indent=2)}")
             if result.get("status") == "err":
                 raise Exception(f"Order error: {result}")
-            save_state({"position": None})
+            save_state({"position": None}, coin)
             log_trade("EMERGENCY_CLOSE", coin, "LONG" if is_long else "SHORT", size, 
                       get_market_price(coin), reason=f"SL/TP设置失败紧急平仓 (attempt {attempt})")
             return  # success
@@ -632,21 +732,22 @@ def emergency_close(coin, size, is_long, max_retries=3):
     notify_discord(f"🚨🚨🚨 **紧急平仓失败** — {coin} 仓位无保护！需要人工干预！")
     raise RuntimeError(f"紧急平仓失败: {coin} size={size} — 仓位无保护！")
 
-def close_position(position, max_retries=3, backoff_seconds=5):
+def close_position(position, max_retries=3, backoff_seconds=5, coin=None):
     """正常平仓（超时等原因），带指数退避重试
 
     Args:
         position: 本地 state 中的仓位信息
         max_retries: 失败后最多重试次数（总尝试 = 1 + max_retries）
         backoff_seconds: 首次重试等待秒数，后续指数增长（0 = 不等待，用于测试）
+        coin: 币种（可选，默认从 position 中读取）
     """
-    coin = position["coin"]
+    coin = coin or position["coin"]
     
     # 先验证链上是否真的有仓位（防止 state 与链上不一致）
     real_pos = get_position(coin)
     if not real_pos:
         print(f"⚠️ 链上无 {coin} 持仓，state 残留。清理 state。")
-        save_state({"position": None})
+        save_state({"position": None}, coin)
         notify_discord(f"ℹ️ {coin} 超时平仓跳过 — 链上已无仓位（可能 SL/TP 已触发）")
         return None
     # 用链上真实数据覆盖，防止 size 不一致
@@ -671,7 +772,7 @@ def close_position(position, max_retries=3, backoff_seconds=5):
             print(f"平仓结果 (attempt {attempt + 1}): {json.dumps(result, indent=2)}")
             if result.get("status") != "err":
                 # 成功
-                save_state({"position": None})
+                save_state({"position": None}, coin)
                 log_trade("CLOSE", coin, real_pos["direction"], size,
                           get_market_price(coin), reason="超时平仓")
                 return True
@@ -775,7 +876,7 @@ def reeval_regime_tp(position):
                         cancel_order(coin, o["oid"])
             except Exception:
                 pass
-            save_state({"position": None})
+            save_state({"position": None}, coin)
             return {"action": "CLOSED_BY_REGIME", "old_regime": old_regime, "new_regime": new_regime,
                     "old_tp_pct": old_tp_pct, "new_tp_pct": new_tp_pct, "close_price": current_price, "de": de}
         elif not is_long and current_price <= new_tp_price:
@@ -794,7 +895,7 @@ def reeval_regime_tp(position):
                         cancel_order(coin, o["oid"])
             except Exception:
                 pass
-            save_state({"position": None})
+            save_state({"position": None}, coin)
             return {"action": "CLOSED_BY_REGIME", "old_regime": old_regime, "new_regime": new_regime,
                     "old_tp_pct": old_tp_pct, "new_tp_pct": new_tp_pct, "close_price": current_price, "de": de}
     except Exception as e:
@@ -845,9 +946,9 @@ def reeval_regime_tp(position):
     }
 
 
-def fix_sl_tp(position):
+def fix_sl_tp(position, coin=None):
     """修复缺失的SL/TP — 使用开仓时的 regime 参数（不用硬编码常量）"""
-    coin = position["coin"]
+    coin = coin or position["coin"]
     size = abs(position["size"])
     entry = position["entry_price"]
     is_long = position["direction"] == "LONG"
@@ -892,5 +993,12 @@ def fix_sl_tp(position):
 if __name__ == "__main__":
     import sys
     dry = "--dry-run" in sys.argv or "-n" in sys.argv
-    result = execute(dry_run=dry)
+    # Support --coin BTC/ETH or positional
+    coin_arg = None
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg == "--coin" and i + 1 < len(sys.argv):
+            coin_arg = sys.argv[i + 1].upper()
+        elif arg.upper() in TRADING_COINS and sys.argv[i - 1] != "--coin":
+            coin_arg = arg.upper()
+    result = execute(dry_run=dry, coin=coin_arg)
     print(f"\n最终结果: {json.dumps(result, default=str, indent=2)}")

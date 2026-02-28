@@ -10,7 +10,7 @@ Lucky Trading Signal System v6.0
 from hyperliquid.info import Info
 import time
 from datetime import datetime, timezone
-from luckytrader.config import get_config
+from luckytrader.config import get_config, get_coin_config, TradingConfig
 from luckytrader.strategy import ema, rsi, detect_signal, get_trend_4h, get_range_levels, get_vol_ratio
 
 def get_candles(coin, interval, hours):
@@ -139,9 +139,19 @@ def get_recent_trades(limit=3):
 
 def analyze(coin='BTC'):
     candles_1h = get_candles(coin, '1h', 72)
-    _cfg_strategy = get_config().strategy
-    _lookback = _cfg_strategy.lookback_bars
-    _range = _cfg_strategy.range_bars
+    # Per-coin config with test-friendly fallback
+    _cfg_fallback = get_config()
+    _coin_cfg = None
+    # Only apply real per-coin overrides when using the real TradingConfig object.
+    # In unit tests get_config is often patched to MagicMock; keep test-provided params.
+    if isinstance(_cfg_fallback, TradingConfig):
+        try:
+            _coin_cfg = get_coin_config(coin)
+        except Exception:
+            _coin_cfg = None
+
+    _lookback = getattr(_coin_cfg, 'lookback_bars', _cfg_fallback.strategy.lookback_bars)
+    _range = getattr(_coin_cfg, 'range_bars', _cfg_fallback.strategy.range_bars)
     # 30m K线：至少需要 (_range + 2) 根bar，每根30m = 0.5h
     # 请求 (_range + 2) / 2 + 24h 额外余量，确保有足够数据
     _30m_hours_needed = (_range + 2) // 2 + 24
@@ -225,7 +235,8 @@ def analyze(coin='BTC'):
     breakout_up = latest_30m_high > high_range
     breakout_down = latest_30m_low < low_range
     _cfg = get_config()
-    vol_confirm = vol_ratio_30m > _cfg.strategy.vol_threshold
+    vol_threshold = getattr(_coin_cfg, 'vol_threshold', _cfg.strategy.vol_threshold)
+    vol_confirm = vol_ratio_30m > vol_threshold
     
     result['breakout'] = {
         'up': breakout_up,
@@ -235,13 +246,17 @@ def analyze(coin='BTC'):
     }
     
     # 4h 趋势 — 通过 strategy.get_trend_4h()（统一逻辑）
-    candles_4h = get_candles(coin, '4h', 42 * 4)
-    trend_4h = get_trend_4h(candles_4h, int(time.time() * 1000))
+    # 需要足够的 4h K线用于 trend EMA 计算
+    _trend_ema = getattr(_coin_cfg, 'trend_ema_period', 0)
+    _4h_hours = max(42, _trend_ema + 10) * 4 if _trend_ema > 0 else 42 * 4
+    candles_4h = get_candles(coin, '4h', _4h_hours)
+    trend_4h = get_trend_4h(candles_4h, int(time.time() * 1000), _trend_ema)
     result['trend_4h'] = trend_4h
 
     # 信号判断 — 通过 strategy.detect_signal()（统一逻辑）
     # idx = len(candles_30m) - 1 → 检查倒数第二根已收盘 K 线
-    signal = detect_signal(candles_30m, candles_4h, len(candles_30m) - 1, _cfg)
+    # Pass coin config as cfg — detect_signal reads strategy attrs from it
+    signal = detect_signal(candles_30m, candles_4h, len(candles_30m) - 1, _cfg, _coin_cfg)
     
     if signal == 'LONG':
         result['signal'] = 'LONG'

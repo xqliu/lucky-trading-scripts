@@ -112,6 +112,26 @@ class TokenConfig:
     address: str = ""
 
 @dataclass(frozen=True)
+class CoinConfig:
+    """Per-coin merged config (strategy + risk overrides)."""
+    coin: str = "BTC"
+    # Strategy params
+    lookback_bars: int = 48
+    range_bars: int = 48
+    vol_threshold: float = 2.0
+    trend_ema_period: int = 48  # Single EMA period for 4h trend filter
+    de_threshold: float = 0.25
+    de_lookback_days: int = 7
+    early_validation_bars: int = 2
+    early_validation_mfe: float = 0.8
+    # Risk params
+    stop_loss_pct: float = 0.03
+    take_profit_pct: float = 0.05
+    max_hold_hours: int = 48
+    position_ratio: float = 0.20
+    max_single_loss: float = 5.0
+
+@dataclass(frozen=True)
 class TradingConfig:
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -158,9 +178,56 @@ def get_config() -> TradingConfig:
 
 def reload_config() -> TradingConfig:
     """Force reload config (useful for tests)."""
-    global _CONFIG
+    global _CONFIG, _COIN_CONFIGS
     _CONFIG = None
+    _COIN_CONFIGS = {}
     return get_config()
+
+
+# --- Per-coin config ---
+TRADING_COINS = ["BTC", "ETH"]  # Active coins for parallel trading
+
+_COIN_CONFIGS: dict = {}
+
+def get_coin_config(coin: str) -> CoinConfig:
+    """Get merged config for a specific coin.
+    
+    Merges global [strategy]+[risk] defaults with per-coin [coins.XXX] overrides.
+    """
+    if coin in _COIN_CONFIGS:
+        return _COIN_CONFIGS[coin]
+
+    cfg = get_config()
+    config_dir = _find_config_dir()
+    data = _load_toml(config_dir / "config.toml")
+
+    # Start with global defaults
+    defaults = {
+        "coin": coin,
+        "lookback_bars": cfg.strategy.lookback_bars,
+        "range_bars": cfg.strategy.range_bars,
+        "vol_threshold": cfg.strategy.vol_threshold,
+        "trend_ema_period": 48,  # default for BTC
+        "de_threshold": cfg.strategy.de_threshold,
+        "de_lookback_days": cfg.strategy.de_lookback_days,
+        "early_validation_bars": cfg.strategy.early_validation_bars,
+        "early_validation_mfe": cfg.strategy.early_validation_mfe,
+        "stop_loss_pct": cfg.risk.stop_loss_pct,
+        "take_profit_pct": cfg.risk.take_profit_pct,
+        "max_hold_hours": cfg.risk.max_hold_hours,
+        "position_ratio": cfg.risk.position_ratio,
+        "max_single_loss": cfg.risk.max_single_loss,
+    }
+
+    # Merge per-coin overrides from [coins.XXX]
+    coin_overrides = data.get("coins", {}).get(coin, {})
+    for key, value in coin_overrides.items():
+        if key in defaults:
+            defaults[key] = value
+
+    coin_cfg = CoinConfig(**defaults)
+    _COIN_CONFIGS[coin] = coin_cfg
+    return coin_cfg
 
 
 def load_secrets() -> dict:

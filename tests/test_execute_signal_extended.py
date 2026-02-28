@@ -157,7 +157,7 @@ class TestExistingPositionBranches:
         with patch('luckytrader.execute.get_position', return_value=position):
             with patch('luckytrader.execute.load_state', return_value=state):
                 with patch('luckytrader.execute.check_sl_tp_orders', return_value=(True, True)):
-                    result = execute()
+                    result = execute(coin="BTC")
         
         assert result["action"] == "HOLD"
         assert result["position"] == position
@@ -186,9 +186,9 @@ class TestExistingPositionBranches:
         with patch('luckytrader.execute.get_position', return_value=position):
             with patch('luckytrader.execute.load_state', return_value=state):
                 with patch('luckytrader.execute.check_sl_tp_orders', return_value=(False, True)):
-                    result = execute()
+                    result = execute(coin="BTC")
         
-        mock_fix.assert_called_once_with(position)
+        mock_fix.assert_called_once_with(position, coin="BTC")
     
     @patch('luckytrader.execute.notify_discord')
     def test_sl_triggered_short(self, mock_notify, mock_hl):
@@ -212,7 +212,7 @@ class TestExistingPositionBranches:
                     with patch('luckytrader.execute.record_trade_result'):
                         with patch('luckytrader.execute.log_trade'):
                             with patch('luckytrader.execute.get_recent_fills', return_value=[]):
-                                result = execute()
+                                result = execute(coin="BTC")
 
         assert result["action"] == "CLOSED_BY_TRIGGER"
         assert result["reason"] == "SL"
@@ -231,7 +231,7 @@ class TestExistingPositionBranches:
         with patch('luckytrader.execute.get_position', return_value=position):
             with patch('luckytrader.execute.load_state', return_value=state):
                 with patch('luckytrader.execute.check_sl_tp_orders', return_value=(True, True)):
-                    result = execute()
+                    result = execute(coin="BTC")
         
         assert result["action"] == "HOLD"
 

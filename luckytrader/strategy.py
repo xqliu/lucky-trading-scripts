@@ -52,7 +52,7 @@ def rsi(data: List[float], period: int = 14) -> List[float]:
 # ─── 信号检测 ───────────────────────────────────────────
 
 def detect_signal(candles_30m: list, candles_4h: list,
-                  idx: int, cfg) -> Optional[str]:
+                  idx: int, cfg, coin_cfg=None) -> Optional[str]:
     """检测交易信号（纯计算，不调 API）
     
     逻辑：
@@ -66,13 +66,19 @@ def detect_signal(candles_30m: list, candles_4h: list,
         candles_4h:  4h K 线列表
         idx:         当前 30m K 线索引（检查 idx-1 是否突破）
         cfg:         配置对象（strategy.range_bars, lookback_bars, vol_threshold）
+        coin_cfg:    可选的 CoinConfig，提供 per-coin 覆盖参数
     
     Returns:
         'LONG' | 'SHORT' | None
     """
-    range_bars = cfg.strategy.range_bars
-    lookback_bars = cfg.strategy.lookback_bars
-    vol_threshold = cfg.strategy.vol_threshold
+    if coin_cfg is not None:
+        range_bars = coin_cfg.range_bars
+        lookback_bars = coin_cfg.lookback_bars
+        vol_threshold = coin_cfg.vol_threshold
+    else:
+        range_bars = cfg.strategy.range_bars
+        lookback_bars = cfg.strategy.lookback_bars
+        vol_threshold = cfg.strategy.vol_threshold
 
     # 数据充足性检查
     if idx < range_bars + 2 or idx < lookback_bars + 2:
@@ -107,8 +113,16 @@ def detect_signal(candles_30m: list, candles_4h: list,
     if vol_ratio < vol_threshold:
         return None
 
-    # 4h 趋势方向过滤
-    trend_4h = get_trend_4h(candles_4h, int(candles_30m[idx]['t']))
+    # 4h 趋势方向过滤（支持 per-coin trend EMA period）
+    if coin_cfg is not None:
+        trend_ema_period = getattr(coin_cfg, 'trend_ema_period', 0)
+    else:
+        trend_ema_period = getattr(cfg.strategy, 'trend_ema_period', 0) if hasattr(cfg, 'strategy') else 0
+    if not isinstance(trend_ema_period, (int, float)):
+        trend_ema_period = 0
+    trend_ema_period = int(trend_ema_period)
+    bar_ts = int(candles_30m[idx].get('t', candles_30m[idx].get('T', 0)))
+    trend_4h = get_trend_4h(candles_4h, bar_ts, trend_ema_period)
 
     if breakout_up:
         return None if trend_4h == 'DOWN' else 'LONG'
@@ -118,17 +132,20 @@ def detect_signal(candles_30m: list, candles_4h: list,
     return None
 
 
-def get_trend_4h(candles_4h: list, bar_time_ms: int) -> str:
+def get_trend_4h(candles_4h: list, bar_time_ms: int, trend_ema_period: int = 0) -> str:
     """计算某个时间点的 4h 趋势方向
     
     Args:
         candles_4h: 4h K 线列表
         bar_time_ms: 当前时间戳（毫秒）
+        trend_ema_period: 趋势 EMA 周期。0 = 使用经典 EMA8/EMA21 交叉（BTC 默认）。
+                          >0 = 使用单 EMA：价格 > EMA = UP（ETH 用 96）。
     
     Returns:
         'UP' | 'DOWN' | 'UNKNOWN'
     """
-    if not candles_4h or len(candles_4h) < 21:
+    min_bars = max(21, trend_ema_period) if trend_ema_period > 0 else 21
+    if not candles_4h or len(candles_4h) < min_bars:
         return 'UNKNOWN'
 
     # 找到 <= bar_time 的最近 4h K 线
@@ -136,13 +153,20 @@ def get_trend_4h(candles_4h: list, bar_time_ms: int) -> str:
     while i4h >= 0 and int(candles_4h[i4h]['t']) > bar_time_ms:
         i4h -= 1
 
-    if i4h < 20:
+    if i4h < min_bars - 1:
         return 'UNKNOWN'
 
     closes_4h = [float(c['c']) for c in candles_4h[:i4h + 1]]
-    ema8_4h = ema(closes_4h, 8)
-    ema21_4h = ema(closes_4h, 21)
-    return 'UP' if ema8_4h[-1] > ema21_4h[-1] else 'DOWN'
+
+    if trend_ema_period > 0:
+        # Single EMA: price above EMA = UP
+        trend_ema = ema(closes_4h, trend_ema_period)
+        return 'UP' if closes_4h[-1] > trend_ema[-1] else 'DOWN'
+    else:
+        # Classic EMA8/EMA21 crossover (BTC default)
+        ema8_4h = ema(closes_4h, 8)
+        ema21_4h = ema(closes_4h, 21)
+        return 'UP' if ema8_4h[-1] > ema21_4h[-1] else 'DOWN'
 
 
 def get_range_levels(candles_30m: list, idx: int, range_bars: int) -> Optional[Tuple[float, float]]:

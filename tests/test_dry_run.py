@@ -22,7 +22,7 @@ class TestDryRunExecute:
         }
         
         with patch('luckytrader.execute.load_state', return_value={"position": None}):
-            result = execute(dry_run=True)
+            result = execute(dry_run=True, coin="BTC")
         
         assert result["action"] == "HOLD"
         assert result.get("dry_run") == True
@@ -42,7 +42,7 @@ class TestDryRunExecute:
         }
         
         with patch('luckytrader.execute.load_state', return_value={"position": None}):
-            result = execute(dry_run=True)
+            result = execute(dry_run=True, coin="BTC")
         
         assert result["action"] == "DRY_RUN_WOULD_OPEN"
         assert result["direction"] == "LONG"
@@ -68,7 +68,7 @@ class TestDryRunExecute:
         }
         
         with patch('luckytrader.execute.load_state', return_value={"position": None}):
-            result = execute(dry_run=True)
+            result = execute(dry_run=True, coin="BTC")
         
         assert result["action"] == "DRY_RUN_WOULD_OPEN"
         assert result["direction"] == "SHORT"
@@ -99,7 +99,7 @@ class TestDryRunExecute:
         with patch('luckytrader.execute.get_position', return_value=position):
             with patch('luckytrader.execute.load_state', return_value=state):
                 with patch('luckytrader.execute.check_sl_tp_orders', return_value=(True, True)):
-                    result = execute(dry_run=True)
+                    result = execute(dry_run=True, coin="BTC")
         
         assert result["action"] == "HOLD"
         assert result.get("dry_run") == True
@@ -127,7 +127,7 @@ class TestDryRunExecute:
         
         with patch('luckytrader.execute.get_position', return_value=position):
             with patch('luckytrader.execute.load_state', return_value=state):
-                result = execute(dry_run=True)
+                result = execute(dry_run=True, coin="BTC")
         
         assert result["action"] == "DRY_RUN_WOULD_TIMEOUT_CLOSE"
         mock_hl.place_market_order.assert_not_called()

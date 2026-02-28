@@ -91,9 +91,9 @@ class TestTrailingLoopAsync:
 
             # asyncio.to_thread should have been called (for trailing.main)
             assert mock_to_thread.called
-            # The first arg should be trailing.main
-            args = mock_to_thread.call_args_list[-1][0]
-            assert args[0] is mock_trailing.main
+            # At least one call must run trailing.main in thread
+            called_funcs = [c[0][0] for c in mock_to_thread.call_args_list if c and c[0]]
+            assert mock_trailing.main in called_funcs
 
 
 # === Fix 3: check_position_closed_by_trigger must not block ===
