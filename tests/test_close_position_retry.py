@@ -55,7 +55,7 @@ class TestClosePositionRetryOnErrStatus:
 
         assert result is True
         assert mock_hl.place_market_order.call_count == 2
-        mock_save.assert_called_once_with({"position": None})
+        mock_save.assert_called_once_with({"position": None}, "BTC")
         mock_log.assert_called_once()
         mock_hl.place_market_order.side_effect = None
 
@@ -76,7 +76,7 @@ class TestClosePositionRetryOnErrStatus:
 
         assert result is True
         assert mock_hl.place_market_order.call_count == 1
-        mock_save.assert_called_once_with({"position": None})
+        mock_save.assert_called_once_with({"position": None}, "BTC")
 
 
 class TestClosePositionRetryOnException:
@@ -189,4 +189,4 @@ class TestClosePositionNoPositionOnChain:
 
         assert result is None
         mock_hl.place_market_order.assert_not_called()
-        mock_save.assert_called_once_with({"position": None})
+        mock_save.assert_called_once_with({"position": None}, "BTC")

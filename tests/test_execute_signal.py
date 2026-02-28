@@ -95,7 +95,7 @@ class TestExecuteFlow:
         mock_analyze.return_value = {"signal": "HOLD", "price": 67000}
         
         with patch('luckytrader.execute.load_state', return_value={"position": None}):
-            result = execute()
+            result = execute(coin="BTC")
         
         assert result["action"] == "HOLD"
         mock_hl.place_market_order.assert_not_called()
@@ -109,7 +109,7 @@ class TestExecuteFlow:
         mock_analyze.return_value = {"error": "数据不足"}
         
         with patch('luckytrader.execute.load_state', return_value={"position": None}):
-            result = execute()
+            result = execute(coin="BTC")
         
         assert result["action"] == "ERROR"
     
@@ -138,7 +138,7 @@ class TestExecuteFlow:
             with patch('luckytrader.execute.load_state', return_value=state):
                 with patch('luckytrader.execute.close_position') as mock_close:
                     with patch('luckytrader.execute.record_trade_result'):
-                        result = execute()
+                        result = execute(coin="BTC")
         
         assert result["action"] == "TIMEOUT_CLOSE"
         mock_close.assert_called_once()
@@ -164,11 +164,11 @@ class TestExecuteFlow:
                     with patch('luckytrader.execute.record_trade_result') as mock_record:
                         with patch('luckytrader.execute.log_trade'):
                             with patch('luckytrader.execute.get_recent_fills', return_value=[]):
-                                result = execute()
+                                result = execute(coin="BTC")
 
         assert result["action"] == "CLOSED_BY_TRIGGER"
         assert result["reason"] == "TP"
-        mock_save.assert_called_with({"position": None})
+        mock_save.assert_called_with({"position": None}, "BTC")
 
 
 class TestEmergencyClose:
@@ -292,13 +292,15 @@ class TestStateIO:
         execute_signal.STATE_FILE = tmp_path / "pos_state.json"
         
         try:
-            # Empty state
-            assert execute_signal.load_state() == {"position": None}
+            # Empty state (new multi-coin format)
+            loaded0 = execute_signal.load_state()
+            assert loaded0["BTC"] == {"position": None}
+            assert loaded0["ETH"] == {"position": None}
             
-            # Save and reload
+            # Save and reload (coin-scoped)
             state = {"position": {"coin": "BTC", "direction": "LONG"}}
-            execute_signal.save_state(state)
-            loaded = execute_signal.load_state()
+            execute_signal.save_state(state, "BTC")
+            loaded = execute_signal.load_state("BTC")
             assert loaded["position"]["coin"] == "BTC"
         finally:
             execute_signal.STATE_FILE = orig
@@ -331,7 +333,7 @@ class TestSlTpTriggerFillPrice:
              patch('luckytrader.execute.record_trade_result') as mock_record, \
              patch('luckytrader.execute.log_trade'), \
              patch('luckytrader.execute.get_recent_fills', return_value=fill_data):
-            result = execute()
+            result = execute(coin="BTC")
 
         assert result["action"] == "CLOSED_BY_TRIGGER"
         # PnL should be based on fill price 71500, not market 72000
@@ -367,7 +369,7 @@ class TestSlTpTriggerFillPrice:
              patch('luckytrader.execute.record_trade_result') as mock_record, \
              patch('luckytrader.execute.log_trade'), \
              patch('luckytrader.execute.get_recent_fills', return_value=wrong_side_fill):
-            result = execute()
+            result = execute(coin="BTC")
 
         assert result["action"] == "CLOSED_BY_TRIGGER"
         # Should use market price 64000 (fallback), NOT fill price 67000 (wrong side)
@@ -398,7 +400,7 @@ class TestSlTpTriggerFillPrice:
              patch('luckytrader.execute.record_trade_result'), \
              patch('luckytrader.execute.log_trade'), \
              patch('luckytrader.execute.get_recent_fills', return_value=fill_data):
-            result = execute()
+            result = execute(coin="BTC")
 
         assert result["action"] == "CLOSED_BY_TRIGGER"
         # Should use fill price 62500, not market 62000
@@ -427,7 +429,7 @@ class TestSlTpTriggerFillPrice:
              patch('luckytrader.execute.record_trade_result'), \
              patch('luckytrader.execute.log_trade'), \
              patch('luckytrader.execute.get_recent_fills', return_value=[]):
-            result = execute()
+            result = execute(coin="BTC")
 
         assert result["action"] == "CLOSED_BY_TRIGGER"
         expected_pnl = (72000 - 67000) / 67000 * 100  # 7.46%

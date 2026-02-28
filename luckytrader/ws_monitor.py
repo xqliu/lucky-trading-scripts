@@ -29,7 +29,7 @@ import websockets
 from websockets.exceptions import ConnectionClosedError, WebSocketException
 
 # 现有模块集成
-from luckytrader.config import get_config, get_workspace_dir
+from luckytrader.config import get_config, get_workspace_dir, TRADING_COINS
 from luckytrader.signal import analyze, format_report, get_recent_fills
 from luckytrader import execute
 from luckytrader import trailing
@@ -195,6 +195,11 @@ class WebSocketManager:
             self.connected = False  # 任何异常都标记为断线，防止无限循环
             return None
 
+    async def subscribe_all_coins(self, interval: str = "30m"):
+        """Subscribe to klines for all trading coins."""
+        for coin in TRADING_COINS:
+            await self.subscribe_klines(coin, interval)
+
     async def heartbeat_monitor(self):
         """心跳监控——持续运行，支持 CancelledError 优雅退出"""
         try:
@@ -208,7 +213,7 @@ class WebSocketManager:
                 if self.connected and time.time() - self.last_message_time > HEARTBEAT_TIMEOUT:
                     logger.warning("Heartbeat timeout - triggering reconnect")
                     if await self.reconnect_with_lock():
-                        await self.subscribe_klines("BTC")
+                        await self.subscribe_all_coins()
         except asyncio.CancelledError:
             logger.info("Heartbeat monitor cancelled")
             raise  # 重新抛出让 gather 正确处理
@@ -228,9 +233,10 @@ class WebSocketManager:
 
 
 class SignalProcessor:
-    """信号处理器"""
+    """信号处理器 — per-coin instance"""
 
-    def __init__(self, cache_size: int = 30):
+    def __init__(self, coin: str = "BTC", cache_size: int = 30):
+        self.coin = coin
         self.kline_cache = deque(maxlen=cache_size)
         self.signal_history = []  # [(timestamp, signal), ...]
         self.duplicate_window = 600  # 10分钟去重窗口
@@ -307,7 +313,7 @@ class SignalProcessor:
 
         try:
             # 调用现有signal.analyze()函数
-            result = analyze("BTC")
+            result = analyze(self.coin)
 
             if "error" in result:
                 logger.error(f"Signal analysis error: {result['error']}")
@@ -368,7 +374,7 @@ class TradeExecutor:
         self._early_validation_done = False  # 1h方向确认是否已完成
         self._opening_lock = False  # 防止竞态条件导致重复开仓
 
-    async def execute_signal(self, signal_result: Dict) -> Dict:
+    async def execute_signal(self, signal_result: Dict, coin: str = "BTC") -> Dict:
         """执行交易信号——直接开仓，不重新分析（async，不阻塞事件循环）"""
         try:
             # 防竞态：如果正在开仓中，直接跳过
@@ -376,9 +382,9 @@ class TradeExecutor:
                 logger.info("Opening lock active, skipping duplicate signal")
                 return {"action": "SKIP", "reason": "opening_lock"}
 
-            # 检查当前是否有持仓（async，避免阻塞事件循环）
-            if await asyncio.to_thread(self.has_position):
-                logger.info("Already has position, skipping signal")
+            # 检查该币种是否有持仓（async，避免阻塞事件循环）
+            if await asyncio.to_thread(self.has_position, coin):
+                logger.info(f"Already has {coin} position, skipping signal")
                 return {"action": "SKIP", "reason": "has_position"}
 
             signal = signal_result.get("signal")
@@ -387,37 +393,34 @@ class TradeExecutor:
 
             # 加锁，防止并发开仓
             self._opening_lock = True
-            logger.info(f"Executing {signal} signal (direct open, no re-analysis)...")
+            logger.info(f"Executing {signal} {coin} signal (direct open, no re-analysis)...")
 
             try:
-                result = await asyncio.to_thread(execute.open_position, signal, signal_result)
+                result = await asyncio.to_thread(execute.open_position, signal, signal_result, coin)
             finally:
-                # 无论成功失败都释放锁
                 self._opening_lock = False
 
             if result.get("action") == "OPENED":
-                # 重置早期验证标志
                 self._early_validation_done = False
-                # 启动移动止损监控
                 asyncio.create_task(self.start_trailing_monitor())
 
             return result
 
         except Exception as e:
-            self._opening_lock = False  # 异常时也要释放锁
+            self._opening_lock = False
             logger.error(f"Trade execution error: {e}")
             return {"action": "ERROR", "error": str(e)}
 
-    def has_position(self) -> bool:
-        """检查是否有持仓"""
+    def has_position(self, coin: str = "BTC") -> bool:
+        """检查指定币种是否有持仓"""
         try:
-            position = execute.get_position("BTC")
+            position = execute.get_position(coin)
             return position is not None
         except Exception as e:
             logger.error(f"Position check error: {e}")
             return False
 
-    async def check_position_closed_by_trigger(self) -> Optional[Dict]:
+    async def check_position_closed_by_trigger(self, coin: str = "BTC") -> Optional[Dict]:
         """检查 SL/TP 是否被 Hyperliquid 自动触发（async，不阻塞事件循环）
 
         对比 position_state.json（本地记录）vs 链上实际持仓。
@@ -432,39 +435,36 @@ class TradeExecutor:
 
         try:
             # 在线程中执行同步 REST API 调用
-            state = await asyncio.to_thread(execute.load_state)
+            state = await asyncio.to_thread(execute.load_state, coin)
             if not state.get("position"):
                 return None  # 本地也没持仓记录，正常
 
             # 本地有持仓记录，检查链上
-            position = await asyncio.to_thread(execute.get_position, "BTC")
+            position = await asyncio.to_thread(execute.get_position, coin)
             if position is not None:
                 return None  # 链上仍有持仓，正常
 
             # 本地有记录但链上无持仓 → SL/TP 被触发！
             sp = state["position"]
-            logger.warning(f"Position closed by trigger: {sp['direction']} {sp['coin']}")
+            logger.warning(f"Position closed by trigger: {sp['direction']} {coin}")
 
-            # 尝试获取实际平仓成交价（验证 fill side 匹配平仓方向）
             entry = sp["entry_price"]
             expected_close_side = "SELL" if sp["direction"] == "LONG" else "BUY"
             fills = await asyncio.to_thread(get_recent_fills, 5)
             close_fill = next(
-                (f for f in fills if f.get("coin") == sp["coin"] and f.get("side") == expected_close_side),
+                (f for f in fills if f.get("coin") == coin and f.get("side") == expected_close_side),
                 None
             )
             if close_fill:
                 close_price = float(close_fill["price"])
             else:
-                # 无匹配 fill，回退到市场价
-                close_price = await asyncio.to_thread(get_market_price, sp["coin"])
+                close_price = await asyncio.to_thread(get_market_price, coin)
 
             if sp["direction"] == "LONG":
                 pnl_pct = (close_price - entry) / entry * 100
             else:
                 pnl_pct = (entry - close_price) / entry * 100
 
-            # 判断是 SL 还是 TP
             sl = sp.get("sl_price", 0)
             tp = sp.get("tp_price", 0)
             if sp["direction"] == "LONG":
@@ -472,18 +472,17 @@ class TradeExecutor:
             else:
                 reason = "TP" if close_price <= tp * 1.01 else "SL" if close_price >= sl * 0.99 else "UNKNOWN"
 
-            # 记录交易结果
-            await asyncio.to_thread(execute.record_trade_result, pnl_pct, sp["direction"], sp["coin"], reason)
-            await asyncio.to_thread(execute.log_trade, "CLOSED_BY_TRIGGER", sp["coin"], sp["direction"], sp["size"],
+            await asyncio.to_thread(execute.record_trade_result, pnl_pct, sp["direction"], coin, reason)
+            await asyncio.to_thread(execute.log_trade, "CLOSED_BY_TRIGGER", coin, sp["direction"], sp["size"],
                              close_price, None, None, f"{reason} 触发, PnL {pnl_pct:+.2f}%")
-            await asyncio.to_thread(execute.save_state, {"position": None})
+            await asyncio.to_thread(execute.save_state, {"position": None}, coin)
 
             return {
                 "action": "CLOSED_BY_TRIGGER",
                 "reason": reason,
                 "pnl_pct": pnl_pct,
                 "direction": sp["direction"],
-                "coin": sp["coin"],
+                "coin": coin,
                 "entry_price": entry,
                 "close_price": close_price,
             }
@@ -822,14 +821,15 @@ class StateManager:
             "last_run_time": self.state.get("monitoring", {}).get("start_time")
         }
 
-        # 检查现有持仓
+        # 检查现有持仓（所有交易币种）
         try:
             from luckytrader.execute import get_position
-            position = get_position("BTC")
-            if position:
-                recovery_info["has_position"] = True
-                recovery_info["position"] = position
-                logger.info(f"Recovered position: {position['direction']} {position['size']} BTC")
+            for coin in TRADING_COINS:
+                position = get_position(coin)
+                if position:
+                    recovery_info["has_position"] = True
+                    recovery_info["position"] = position
+                    logger.info(f"Recovered position: {position['direction']} {position['size']} {coin}")
         except Exception as e:
             logger.error(f"Position recovery failed: {e}")
 
@@ -849,7 +849,8 @@ class WSMonitor:
 
     def __init__(self):
         self.ws_manager = WebSocketManager()
-        self.signal_processor = SignalProcessor()
+        # Per-coin signal processors
+        self.signal_processors = {coin: SignalProcessor(coin) for coin in TRADING_COINS}
         self.trade_executor = TradeExecutor()
         self.notification_manager = NotificationManager()
         self.state_manager = StateManager()
@@ -893,8 +894,8 @@ class WSMonitor:
             logger.error("Failed to establish WebSocket connection")
             return
 
-        # 订阅数据
-        await self.ws_manager.subscribe_klines("BTC")
+        # 订阅所有交易币种
+        await self.ws_manager.subscribe_all_coins()
 
         # 启动各种任务
         self.tasks = [
@@ -928,9 +929,9 @@ class WSMonitor:
                     # 超时或连接问题
                     if not self.ws_manager.connected:
                         logger.warning("WebSocket disconnected, attempting reconnect...")
-                        await asyncio.sleep(2)  # 退避，防止断线时无限循环刷错误日志
+                        await asyncio.sleep(2)
                         if await self.ws_manager.reconnect_with_lock():
-                            await self.ws_manager.subscribe_klines("BTC")
+                            await self.ws_manager.subscribe_all_coins()
                     continue
 
                 # 处理K线数据
@@ -942,33 +943,36 @@ class WSMonitor:
                         logger.error(f"Failed to normalize kline: {e} | raw={raw_data}")
                         continue
 
-                    if self.signal_processor.add_kline(kline_data):
+                    # Route to the correct per-coin signal processor
+                    kline_coin = kline_data.get("coin", "BTC")
+                    processor = self.signal_processors.get(kline_coin)
+                    if not processor:
+                        continue  # Unknown coin, skip
+
+                    if processor.add_kline(kline_data):
                         processed_count += 1
 
-                        # 检查 SL/TP 是否被自动触发（async）
-                        trigger_result = await self.trade_executor.check_position_closed_by_trigger()
+                        # 检查 SL/TP 是否被自动触发（per-coin）
+                        trigger_result = await self.trade_executor.check_position_closed_by_trigger(kline_coin)
                         if trigger_result:
-                            logger.info(f"SL/TP triggered: {trigger_result['reason']}, PnL {trigger_result['pnl_pct']:+.2f}%")
+                            logger.info(f"{kline_coin} SL/TP triggered: {trigger_result['reason']}, PnL {trigger_result['pnl_pct']:+.2f}%")
                             await self.notification_manager.async_notify_trade_closed(trigger_result)
 
                         # 信号检测
-                        signal_result = self.signal_processor.process_signal()
+                        signal_result = processor.process_signal()
 
                         if signal_result and signal_result.get("signal") != "HOLD":
-                            # 发现交易信号
-                            logger.info(f"Signal detected: {signal_result['signal']}")
+                            logger.info(f"{kline_coin} Signal detected: {signal_result['signal']}")
                             await self.notification_manager.async_notify_signal_detected(signal_result)
 
-                            # 执行交易（async）
-                            trade_result = await self.trade_executor.execute_signal(signal_result)
+                            # 执行交易（per-coin）
+                            trade_result = await self.trade_executor.execute_signal(signal_result, kline_coin)
 
                             if trade_result.get("action") == "OPENED":
-                                # 通知由 execute.open_position() 内部发送，不重复
-                                self.state_manager.update_trading_status(signal_result["signal"])
+                                self.state_manager.update_trading_status(f"{kline_coin}:{signal_result['signal']}")
                             elif trade_result.get("action") == "ERROR":
-                                # execute_signal 的 try/except 异常，execute.py 内部可能未通知
                                 await self.notification_manager.async_notify_error(
-                                    f"Trade execution failed: {trade_result.get('error')}",
+                                    f"{kline_coin} Trade execution failed: {trade_result.get('error')}",
                                     critical=True)
 
                         # 更新处理计数
@@ -991,10 +995,9 @@ class WSMonitor:
 
         # 根据错误类型决定处理方式
         if isinstance(error, (ConnectionClosedError, WebSocketException)):
-            # WebSocket相关错误
             logger.info("WebSocket error detected, triggering reconnect")
             await self.ws_manager.reconnect_with_lock()
-            await self.ws_manager.subscribe_klines("BTC")
+            await self.ws_manager.subscribe_all_coins()
 
         elif "API" in str(error) or "timeout" in str(error).lower():
             # API相关错误
