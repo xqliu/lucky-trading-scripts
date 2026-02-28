@@ -159,6 +159,18 @@ def check_and_update_trailing_stop(coin: str, position: dict, state: dict):
         "last_stop_price": None
     })
     
+    # 检测仓位变更（入场价不同 = 新仓位），重置状态
+    stored_entry = pos_state.get("entry_price")
+    if stored_entry is not None and abs(stored_entry - entry_price) > 0.01:
+        print(f"   🔄 Position changed! Old entry ${stored_entry:,.2f} → New entry ${entry_price:,.2f}. Resetting trailing state.")
+        pos_state = {
+            "entry_price": entry_price,
+            "high_water_mark": entry_price,
+            "trailing_active": False,
+            "last_stop_price": None
+        }
+        state[coin] = pos_state
+    
     high_water_mark = pos_state.get("high_water_mark") or entry_price
     trailing_active = pos_state.get("trailing_active", False)
     

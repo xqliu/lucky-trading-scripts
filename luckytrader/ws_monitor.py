@@ -567,7 +567,7 @@ class TradeExecutor:
                                         # 市价平仓
                                         from luckytrader.trade import place_market_order, cancel_order
                                         from luckytrader.execute import get_open_orders_detailed
-                                        place_market_order(coin, size, is_buy=not is_long, reduce_only=True)
+                                        place_market_order(coin, not is_long, size)
 
                                         # 计算盈亏
                                         if is_long:
