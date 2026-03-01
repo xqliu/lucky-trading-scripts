@@ -14,6 +14,7 @@ from pathlib import Path
 from luckytrader.signal import get_candles
 from luckytrader.strategy import detect_signal
 from luckytrader.config import get_config, get_workspace_dir
+from luckytrader.backtest import simulate_trade
 
 SYSTEM_FILE = Path(__file__).parent.parent / "memory" / "trading" / "SYSTEM.md"
 
@@ -24,37 +25,6 @@ CURRENT = {
     "tp": _cfg.risk.take_profit_pct,
     "hold": _cfg.risk.max_hold_hours * 2,  # convert hours to 30m bars
 }
-
-# 交易成本
-FEE_ROUND_TRIP_PCT = 8.64 / 10000  # 0.000864
-
-def simulate_trade(direction, entry, entry_idx, highs, lows, closes, stop_pct, tp_pct, max_hold):
-    if direction == 'LONG':
-        stop = entry * (1 - stop_pct)
-        tp = entry * (1 + tp_pct)
-    else:
-        stop = entry * (1 + stop_pct)
-        tp = entry * (1 - tp_pct)
-    
-    for j in range(1, min(max_hold + 1, len(closes) - entry_idx)):
-        idx = entry_idx + j
-        if direction == 'LONG':
-            if lows[idx] <= stop:
-                return {'pnl_pct': -stop_pct * 100 - FEE_ROUND_TRIP_PCT * 100, 'reason': 'STOP', 'bars': j}
-            if highs[idx] >= tp:
-                return {'pnl_pct': tp_pct * 100 - FEE_ROUND_TRIP_PCT * 100, 'reason': 'TP', 'bars': j}
-        else:
-            if highs[idx] >= stop:
-                return {'pnl_pct': -stop_pct * 100 - FEE_ROUND_TRIP_PCT * 100, 'reason': 'STOP', 'bars': j}
-            if lows[idx] <= tp:
-                return {'pnl_pct': tp_pct * 100 - FEE_ROUND_TRIP_PCT * 100, 'reason': 'TP', 'bars': j}
-    
-    exit_idx = min(entry_idx + max_hold, len(closes) - 1)
-    if direction == 'LONG':
-        pnl = (closes[exit_idx] - entry) / entry * 100
-    else:
-        pnl = (entry - closes[exit_idx]) / entry * 100
-    return {'pnl_pct': pnl - FEE_ROUND_TRIP_PCT * 100, 'reason': 'TIMEOUT', 'bars': exit_idx - entry_idx}
 
 def run_backtest(candles_30m, sl, tp, hold, candles_4h=None, cfg=None):
     """参数扫描回测 — 使用 strategy.detect_signal() 生成信号"""
