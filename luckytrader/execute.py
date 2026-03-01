@@ -228,16 +228,15 @@ def get_coin_info(coin):
 
 def check_existing_orders(coin):
     """检查是否已有SL/TP挂单"""
-    orders = get_open_orders_detailed()
+    orders = get_open_orders_detailed(coin)
     sl_exists = False
     tp_exists = False
     for o in orders:
-        if o.get("coin") == coin:
-            ot = o.get("orderType", "")
-            if "Stop" in ot or o.get("isTrigger") and "sl" in str(o).lower():
-                sl_exists = True
-            if "Take" in ot or o.get("isTrigger") and "tp" in str(o).lower():
-                tp_exists = True
+        ot = o.get("orderType", "")
+        if "Stop" in ot or o.get("isTrigger") and "sl" in str(o).lower():
+            sl_exists = True
+        if "Take" in ot or o.get("isTrigger") and "tp" in str(o).lower():
+            tp_exists = True
     return sl_exists, tp_exists
 
 def log_trade(action, coin, direction, size, price, sl=None, tp=None, reason=""):
@@ -672,10 +671,9 @@ def open_position(signal, analysis, coin="BTC"):
         print("🚨 止盈 3 次重试全部失败，紧急平仓！")
         # 先取消已设的SL
         try:
-            orders = get_open_orders_detailed()
+            orders = get_open_orders_detailed(coin)
             for o in orders:
-                if o.get("coin") == coin:
-                    cancel_order(coin, o["oid"])
+                cancel_order(coin, o["oid"])
         except Exception as e2:
             print(f"⚠️ Failed to cancel orders before emergency close: {e2}")
         try:
@@ -906,11 +904,10 @@ def close_position(position, max_retries=3, backoff_seconds=5, coin=None):
 
     # 先取消所有挂单
     try:
-        orders = get_open_orders_detailed()
+        orders = get_open_orders_detailed(coin)
         for o in orders:
-            if o.get("coin") == coin:
-                cancel_order(coin, o["oid"])
-                print(f"已取消订单 {o['oid']}")
+            cancel_order(coin, o["oid"])
+            print(f"已取消订单 {o['oid']}")
     except Exception as e:
         print(f"取消挂单失败: {e}")
 
@@ -948,11 +945,11 @@ def close_position(position, max_retries=3, backoff_seconds=5, coin=None):
 
 def check_sl_tp_orders(coin, position):
     """检查SL/TP订单是否存在"""
-    orders = get_open_orders_detailed()
+    orders = get_open_orders_detailed(coin)
     sl_exists = False
     tp_exists = False
     for o in orders:
-        if o.get("coin") == coin and o.get("isTrigger"):
+        if o.get("isTrigger"):
             order_type = o.get("orderType", "")
             if "Stop" in order_type:
                 sl_exists = True
@@ -1052,13 +1049,13 @@ def reeval_regime_tp(position):
             print(f"   🚨 旧 TP 恢复也失败: {e2}，下次 fix_sl_tp 会补")
         return None
     
-    # 更新 position_state
-    state = load_state()
+    # 更新 position_state（per-coin）
+    state = load_state(coin)
     if state.get("position"):
         state["position"]["regime"] = new_regime
         state["position"]["regime_tp_pct"] = new_tp_pct
         state["position"]["tp_price"] = new_tp_price
-        save_state(state)
+        save_state(state, coin)
     
     return {
         "action": "TP_TIGHTENED",
