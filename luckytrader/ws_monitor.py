@@ -373,8 +373,6 @@ class TradeExecutor:
         self._regime_check_interval = 3600  # DE 基于日线，每小时重算一次足够
         self._early_validation_done = False  # 1h方向确认是否已完成
         self._opening_lock = False  # 防止竞态条件导致重复开仓
-        self._last_open_time = 0  # 上次开仓完成时间（API 冷却）
-        self._api_cooldown_seconds = 5  # 多币种间 API 冷却（防 429）
 
     async def execute_signal(self, signal_result: Dict, coin: str = "BTC") -> Dict:
         """执行交易信号——直接开仓，不重新分析（async，不阻塞事件循环）"""
@@ -393,13 +391,6 @@ class TradeExecutor:
             if signal == "HOLD":
                 return {"action": "HOLD"}
 
-            # API 冷却：上次开仓后等待，防止多币种同时下单触发 429
-            elapsed = time.time() - self._last_open_time
-            if elapsed < self._api_cooldown_seconds:
-                wait = self._api_cooldown_seconds - elapsed
-                logger.info(f"API cooldown: waiting {wait:.1f}s before {coin} open")
-                await asyncio.sleep(wait)
-
             # 加锁，防止并发开仓
             self._opening_lock = True
             logger.info(f"Executing {signal} {coin} signal (direct open, no re-analysis)...")
@@ -408,7 +399,6 @@ class TradeExecutor:
                 result = await asyncio.to_thread(execute.open_position, signal, signal_result, coin)
             finally:
                 self._opening_lock = False
-                self._last_open_time = time.time()
 
             if result.get("action") == "OPENED":
                 self._early_validation_done = False
