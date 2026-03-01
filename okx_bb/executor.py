@@ -605,7 +605,29 @@ def main():
             print("No open position")
 
         balance = executor.client.get_balance()
-        print(f"Account: ${balance.get('total_equity', 0):.2f}")
+        if balance:
+            print(f"Account: ${float(balance.get('total_equity', 0)):.2f}")
+
+        # Show pending trigger orders
+        try:
+            algos = executor.client.get_algo_orders(executor.instId, "trigger")
+            if algos:
+                print(f"Pending triggers: {len(algos)}")
+                for a in algos:
+                    side = a.get("side", "?")
+                    trigger_px = a.get("triggerPx", "?")
+                    algo_id = a.get("algoId", "?")
+                    print(f"  {side.upper()} trigger @ ${float(trigger_px):.2f} ({algo_id})")
+            else:
+                print("No pending triggers")
+        except Exception as e:
+            print(f"Trigger check error: {e}")
+
+        # Show current price and BB levels
+        ticker = executor.client.get_ticker(executor.instId)
+        if ticker:
+            print(f"ETH: ${ticker['last']:.2f}")
+
         return
 
     if args.dry_run:
