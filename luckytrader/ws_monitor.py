@@ -555,8 +555,6 @@ class TradeExecutor:
                             ev_mfe_thr = execute._cfg.strategy.early_validation_mfe
 
                             if elapsed_min >= ev_minutes:
-                                # 时间到了，检查 MFE
-                                self._early_validation_done = True
                                 entry_price = pos["entry_price"]
                                 direction = pos["direction"]
                                 coin = pos.get("coin", "BTC")
@@ -568,39 +566,46 @@ class TradeExecutor:
                                 _start = int(entry_time.timestamp() * 1000)
                                 candles = _info.candles_snapshot(coin, '30m', _start, _end)
 
-                                if candles and len(candles) >= 2:
-                                    highs = [float(c['h']) for c in candles[1:]]  # 跳过入场那根
-                                    lows = [float(c['l']) for c in candles[1:]]
-                                    if direction == 'LONG':
-                                        mfe = (max(highs) - entry_price) / entry_price * 100
-                                    else:
-                                        mfe = (entry_price - min(lows)) / entry_price * 100
+                                if not candles or len(candles) < 2:
+                                    # K线数据不足，下个循环重试（不标记 done）
+                                    logger.warning(f"Early validation: insufficient candles ({len(candles) if candles else 0}), will retry next loop")
+                                    continue
 
-                                    logger.info(f"Early validation: {direction} @ ${entry_price:,.0f}, "
-                                              f"elapsed {elapsed_min:.0f}min, MFE={mfe:.3f}%, threshold={ev_mfe_thr}%")
+                                # K线数据够了，执行检查
+                                self._early_validation_done = True
+                                highs = [float(c['h']) for c in candles[1:]]  # 跳过入场那根
+                                lows = [float(c['l']) for c in candles[1:]]
+                                if direction == 'LONG':
+                                    mfe = (max(highs) - entry_price) / entry_price * 100
+                                else:
+                                    mfe = (entry_price - min(lows)) / entry_price * 100
 
-                                    if mfe < ev_mfe_thr:
-                                        # 假突破，提前出局
-                                        logger.warning(f"❌ Early validation FAILED: MFE {mfe:.3f}% < {ev_mfe_thr}%, closing position")
-                                        print(f"❌ 1h方向确认失败: MFE {mfe:.3f}% < {ev_mfe_thr}%, 提前出局")
+                                logger.info(f"Early validation: {direction} @ ${entry_price:,.0f}, "
+                                          f"elapsed {elapsed_min:.0f}min, MFE={mfe:.3f}%, threshold={ev_mfe_thr}%")
 
-                                        size = abs(pos["size"])
-                                        is_long = direction == "LONG"
-                                        pnl_pct = execute.compute_pnl_pct(direction, entry_price, execute.get_market_price(coin))
+                                if mfe < ev_mfe_thr:
+                                    # 假突破，提前出局
+                                    logger.warning(f"❌ Early validation FAILED: MFE {mfe:.3f}% < {ev_mfe_thr}%, closing position")
+                                    print(f"❌ 1h方向确认失败: MFE {mfe:.3f}% < {ev_mfe_thr}%, 提前出局")
 
-                                        execute.close_and_cleanup(
-                                            coin, is_long, size, reason="EARLY_EXIT",
-                                            pnl_pct=pnl_pct,
-                                            extra_msg=f"1h方向确认失败 MFE={mfe:.3f}%<{ev_mfe_thr}%"
-                                        )
+                                    size = abs(pos["size"])
+                                    is_long = direction == "LONG"
+                                    pnl_pct = execute.compute_pnl_pct(direction, entry_price, execute.get_market_price(coin))
 
-                                        logger.info("Position closed by early validation, stopping trailing monitor")
-                                        break
-                                    else:
-                                        logger.info(f"✅ Early validation PASSED: MFE {mfe:.3f}% >= {ev_mfe_thr}%")
-                                        print(f"✅ 1h方向确认通过: MFE {mfe:.3f}% >= {ev_mfe_thr}%")
+                                    execute.close_and_cleanup(
+                                        coin, is_long, size, reason="EARLY_EXIT",
+                                        pnl_pct=pnl_pct,
+                                        extra_msg=f"1h方向确认失败 MFE={mfe:.3f}%<{ev_mfe_thr}%"
+                                    )
+
+                                    logger.info("Position closed by early validation, stopping trailing monitor")
+                                    break
+                                else:
+                                    logger.info(f"✅ Early validation PASSED: MFE {mfe:.3f}% >= {ev_mfe_thr}%")
+                                    print(f"✅ 1h方向确认通过: MFE {mfe:.3f}% >= {ev_mfe_thr}%")
                     except Exception as e:
-                        logger.error(f"Early validation error: {e}")
+                        # 异常不标记 done，下个循环重试
+                        logger.error(f"Early validation error (will retry): {e}")
 
                 # 在线程中调用同步 trailing 模块，避免阻塞事件循环
                 alerts = await asyncio.to_thread(trailing.main)
