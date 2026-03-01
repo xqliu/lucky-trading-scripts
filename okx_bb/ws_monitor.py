@@ -113,6 +113,8 @@ class WSMonitor:
         # IMPORTANT: Only cleared by _on_entry_filled, NEVER by cancel
         self._triggered_direction: Optional[str] = None
         self._triggered_sz: Optional[str] = None
+        self._triggered_at: Optional[float] = None  # time.time() when trigger fired
+        self.TRIGGER_FILL_TIMEOUT = 60  # seconds to wait for fill after trigger
 
         # Guard: entry in progress (prevents orphan detector from killing it)
         self._entry_in_progress = False
@@ -624,11 +626,13 @@ class WSMonitor:
                         self._pending_long_algoId = None
                         self._triggered_direction = "LONG"
                         self._triggered_sz = sz
+                        self._triggered_at = time.time()
                     elif algo_id == self._pending_short_algoId:
                         logger.info("🎯 SHORT trigger fired")
                         self._pending_short_algoId = None
                         self._triggered_direction = "SHORT"
                         self._triggered_sz = sz
+                        self._triggered_at = time.time()
                     else:
                         # SL trigger or unknown
                         await self._check_position_closed()
@@ -683,6 +687,8 @@ class WSMonitor:
                 logger.info(f"Position closed: {result.exit_reason.value}")
                 send_discord(
                     f"{MSG_PREFIX}📊 OKX BB 平仓: {result.exit_reason.value}\n"
+                    f"{result.direction.value} {result.coin}\n"
+                    f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
                     f"PnL: {result.pnl_pct*100:+.2f}%",
                     mention=True)
         except Exception as e:
@@ -701,6 +707,8 @@ class WSMonitor:
                 logger.info(f"Position closed: {result.exit_reason.value}")
                 send_discord(
                     f"{MSG_PREFIX}📊 OKX BB 平仓: {result.exit_reason.value}\n"
+                    f"{result.direction.value} {result.coin}\n"
+                    f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
                     f"PnL: {result.pnl_pct*100:+.2f}%",
                     mention=True)
                 await self._atomic_cancel_and_place()
@@ -713,6 +721,41 @@ class WSMonitor:
         while self._running:
             await asyncio.sleep(300)
             try:
+                # Check for stale triggered state (limit order didn't fill)
+                if self._triggered_direction and self._triggered_at:
+                    elapsed = time.time() - self._triggered_at
+                    if elapsed > self.TRIGGER_FILL_TIMEOUT:
+                        logger.warning(f"Trigger fired {elapsed:.0f}s ago but no fill — checking exchange")
+                        positions = await self._rest_exchange("get_positions", self.cfg.instId)
+                        has_pos = positions and any(float(p.get("pos", 0)) != 0 for p in positions)
+                        if has_pos:
+                            # Position exists — fill happened but WS missed it
+                            logger.info("Position found, processing as late fill")
+                            pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
+                            avg_px = float(pos_info.get("avgPx", 0))
+                            pos_sz = f"{abs(float(pos_info.get('pos', 0))):.2f}"
+                            direction = self._triggered_direction
+                            self._triggered_direction = None
+                            self._triggered_sz = None
+                            self._triggered_at = None
+                            await self._on_entry_filled(direction, avg_px, pos_sz)
+                        else:
+                            # No position — limit order expired or was rejected
+                            logger.warning("No position after trigger timeout — cancelling stale orders and resetting")
+                            # Cancel any unfilled limit orders
+                            open_orders = await self._rest_exchange("get_open_orders", self.cfg.instId)
+                            for o in (open_orders or []):
+                                try:
+                                    await self._rest_exchange("cancel_order", self.cfg.instId, o["ordId"])
+                                except Exception:
+                                    pass
+                            self._triggered_direction = None
+                            self._triggered_sz = None
+                            self._triggered_at = None
+                            send_discord(f"{MSG_PREFIX}⚠️ Trigger 触发但限价单未成交（{elapsed:.0f}s），已重置", mention=True)
+                            await self._atomic_cancel_and_place()
+                        continue
+
                 # Skip if entry in progress
                 if self._entry_in_progress or self._triggered_direction:
                     logger.debug("Periodic: entry in progress, skip")
@@ -724,6 +767,8 @@ class WSMonitor:
                     logger.info(f"Periodic: closed {result.exit_reason.value}")
                     send_discord(
                         f"{MSG_PREFIX}📊 平仓 (periodic): {result.exit_reason.value}\n"
+                        f"{result.direction.value} {result.coin}\n"
+                        f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
                         f"PnL: {result.pnl_pct*100:+.2f}%",
                         mention=True)
                     await self._atomic_cancel_and_place()
