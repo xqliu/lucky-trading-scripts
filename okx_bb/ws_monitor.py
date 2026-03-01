@@ -840,9 +840,10 @@ class WSMonitor:
         import subprocess as _sp
         try:
             _commit = _sp.run(
-                ["git", "log", "--format=%h %s (%ci)", "-1"],
+                ["git", "log", "--format=%h %s (%cd)", "-1", "--date=format-local:%Y-%m-%d %H:%M SGT"],
                 capture_output=True, text=True, timeout=5,
                 cwd=str(Path(__file__).parent.parent),
+                env={**os.environ, "TZ": "Asia/Singapore"},
             ).stdout.strip()
         except Exception:
             _commit = "unknown"
