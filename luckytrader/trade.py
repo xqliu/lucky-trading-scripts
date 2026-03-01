@@ -187,10 +187,17 @@ def get_open_orders():
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
     return info.open_orders(MAIN_WALLET)
 
-def get_open_orders_detailed():
-    """Get open orders with full details (including isTrigger, orderType, etc.)"""
+def get_open_orders_detailed(coin: str = None):
+    """Get open orders with full details (including isTrigger, orderType, etc.)
+    
+    Args:
+        coin: 可选，过滤指定币种的订单。None 返回全部。
+    """
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
-    return info.frontend_open_orders(MAIN_WALLET)
+    orders = info.frontend_open_orders(MAIN_WALLET)
+    if coin:
+        return [o for o in orders if o.get("coin") == coin]
+    return orders
 
 def main():
     parser = argparse.ArgumentParser(description="Hyperliquid Trading CLI")

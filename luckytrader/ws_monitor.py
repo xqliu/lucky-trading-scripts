@@ -613,24 +613,25 @@ class TradeExecutor:
 
                 # 动态 regime 重估：如果市场从趋势变横盘，收紧 TP（每小时一次）
                 now_ts = time.time()
-                try:
-                    state = await asyncio.to_thread(execute.load_state)
-                    pos = state.get("position")
-                    if (pos and pos.get("regime_tp_pct", 0) > 0.02
-                            and now_ts - self._last_regime_check >= self._regime_check_interval):
-                        # 只在 TP > 2%（即趋势市开仓）时检查
-                        self._last_regime_check = now_ts
-                        result = await asyncio.to_thread(execute.reeval_regime_tp, pos)
-                        if result:
-                            logger.warning(f"Regime re-eval: {result['old_regime']}→{result['new_regime']}, "
-                                         f"TP {result['old_tp_pct']*100:.0f}%→{result['new_tp_pct']*100:.0f}%")
-                            # 日志输出（journalctl 可见）
-                            print(f"🔄 Regime 动态调整: DE={result['de']:.3f} "
-                                  f"{result['old_regime']}→{result['new_regime']} "
-                                  f"TP {result['old_tp_pct']*100:.0f}%→{result['new_tp_pct']*100:.0f}% "
-                                  f"(${result['new_tp_price']:,.0f})")
-                except Exception as e:
-                    logger.error(f"Regime re-eval error: {e}")
+                if now_ts - self._last_regime_check >= self._regime_check_interval:
+                    self._last_regime_check = now_ts
+                    for rr_coin in execute.TRADING_COINS:
+                        try:
+                            coin_state = await asyncio.to_thread(execute.load_state, rr_coin)
+                            pos = coin_state.get("position")
+                            if not (pos and pos.get("regime_tp_pct", 0) > 0.02):
+                                continue
+                            # 只在 TP > 2%（即趋势市开仓）时检查
+                            result = await asyncio.to_thread(execute.reeval_regime_tp, pos)
+                            if result:
+                                logger.warning(f"Regime re-eval {rr_coin}: {result['old_regime']}→{result['new_regime']}, "
+                                             f"TP {result['old_tp_pct']*100:.0f}%→{result['new_tp_pct']*100:.0f}%")
+                                print(f"🔄 {rr_coin} Regime 动态调整: DE={result['de']:.3f} "
+                                      f"{result['old_regime']}→{result['new_regime']} "
+                                      f"TP {result['old_tp_pct']*100:.0f}%→{result['new_tp_pct']*100:.0f}% "
+                                      f"(${result['new_tp_price']:,.0f})")
+                        except Exception as e:
+                            logger.error(f"Regime re-eval error for {rr_coin}: {e}")
 
                 await asyncio.sleep(self.position_check_interval)
 
