@@ -35,3 +35,4 @@ state/
 okx_bb/config/.okx_config
 okx_bb/config/config.toml
 okx_bb/state/*.json
+okx_bb/data/
