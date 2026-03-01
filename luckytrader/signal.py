@@ -39,7 +39,8 @@ def get_market_context():
                     'mark_price': float(ctx['markPx']),
                 }
         return context
-    except:
+    except Exception as e:
+        print(f"⚠️ get_market_context failed: {e}")
         return {}
 
 def get_recent_fills(limit=3):
@@ -57,7 +58,8 @@ def get_recent_fills(limit=3):
             'price': f['px'],
             'time': int(f['time']),
         } for f in fills]
-    except:
+    except Exception as e:
+        print(f"⚠️ get_recent_fills failed: {e}")
         return []
 
 def get_recent_trades(limit=3):
@@ -68,7 +70,8 @@ def get_recent_trades(limit=3):
     try:
         resp = requests.post(url, json={'type': 'userFills', 'user': wallet}, timeout=10)
         raw = resp.json()[:30]  # 多取一些以便配对
-    except:
+    except Exception as e:
+        print(f"⚠️ get_recent_trades failed: {e}")
         return []
 
     # 解析每条 fill
@@ -147,7 +150,8 @@ def analyze(coin='BTC'):
     if isinstance(_cfg_fallback, TradingConfig):
         try:
             _coin_cfg = get_coin_config(coin)
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ get_coin_config({coin}) failed: {e}")
             _coin_cfg = None
 
     _lookback = getattr(_coin_cfg, 'lookback_bars', _cfg_fallback.strategy.lookback_bars)

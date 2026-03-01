@@ -580,8 +580,8 @@ class TradeExecutor:
                                             for o in get_open_orders_detailed(coin):
                                                 if o.get("isTrigger"):
                                                     cancel_order(coin, o["oid"])
-                                        except Exception:
-                                            pass
+                                        except Exception as e:
+                                            logger.error(f"Failed to cancel orders during early exit: {e}")
 
                                         # 记录 + 通知
                                         execute.record_trade_result(pnl_pct, direction, coin, "EARLY_EXIT")
