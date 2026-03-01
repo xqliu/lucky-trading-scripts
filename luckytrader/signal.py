@@ -11,7 +11,8 @@ from hyperliquid.info import Info
 import time
 from datetime import datetime, timezone
 from luckytrader.config import get_config, get_coin_config, TradingConfig
-from luckytrader.strategy import ema, rsi, detect_signal, get_trend_4h, get_range_levels, get_vol_ratio
+from luckytrader.indicators import ema, rsi
+from luckytrader.strategy import detect_signal, get_trend_4h, get_range_levels, get_vol_ratio
 
 def get_candles(coin, interval, hours):
     info = Info(skip_ws=True)
