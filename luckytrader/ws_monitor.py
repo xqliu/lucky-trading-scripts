@@ -572,7 +572,6 @@ class TradeExecutor:
                             continue
 
                         # K线数据够了，执行检查，标记该币种 done
-                        self._early_validation_done[ev_coin] = True
                         highs = [float(c['h']) for c in candles[1:]]  # 跳过入场那根
                         lows = [float(c['l']) for c in candles[1:]]
                         if direction == 'LONG':
@@ -597,9 +596,12 @@ class TradeExecutor:
                                 pnl_pct=pnl_pct,
                                 extra_msg=f"1h方向确认失败 MFE={mfe:.3f}%<{ev_mfe_thr}%"
                             )
+                            # Mark done ONLY after successful close
+                            self._early_validation_done[ev_coin] = True
                         else:
                             logger.info(f"✅ Early validation PASSED {ev_coin}: MFE {mfe:.3f}% >= {ev_mfe_thr}%")
                             print(f"✅ {ev_coin} 1h方向确认通过: MFE {mfe:.3f}% >= {ev_mfe_thr}%")
+                            self._early_validation_done[ev_coin] = True
                 except Exception as e:
                     # 异常不标记 done，下个循环重试
                     logger.error(f"Early validation error (will retry): {e}")
