@@ -126,9 +126,9 @@ def _get_regime_sl_pct(coin: str) -> float:
     """
     try:
         from luckytrader.execute import load_state as load_execute_state
-        exec_state = load_execute_state()
+        exec_state = load_execute_state(coin)
         pos = exec_state.get("position") or {}
-        if pos.get("coin") == coin and pos.get("regime_sl_pct"):
+        if pos.get("regime_sl_pct"):
             pct = float(pos["regime_sl_pct"])
             print(f"   Trailing initial_stop: regime_sl_pct={pct*100:.0f}% (regime={pos.get('regime','?')})")
             return pct
@@ -306,8 +306,11 @@ def main():
         # 清理残留的 trailing state（防止与链上不一致）
         # 二次确认：对照 position_state.json，若本地记录有持仓则认为 API 可能误报，跳过清理
         from luckytrader.execute import load_state as load_execute_state
-        execute_state = load_execute_state()
-        if execute_state.get("position"):
+        from luckytrader.config import TRADING_COINS
+        has_local_position = any(
+            load_execute_state(c).get("position") for c in TRADING_COINS
+        )
+        if has_local_position:
             print("⚠️ API 返回无持仓，但 position_state.json 有记录，疑似 API 误报，跳过清理")
             return
         state = load_state()
