@@ -6,11 +6,12 @@
 
 ## 1. 单一真相源 (Single Source of Truth)
 
-**指标计算只在 `strategy.py` 定义一次。**
+**每个函数只在一个文件中定义。**
 
-- EMA、BB、RSI、detect_signal、get_trend_4h — 全部且只在 `strategy.py`
-- 其他文件（backtest、signal、execute、chart）一律 `from luckytrader.strategy import ...`
-- **绝对禁止**在 backtest 或任何其他文件中重新实现指标逻辑
+- **通用数学指标**（EMA、RSI 等）→ 只在 `indicators.py`
+- **策略函数**（detect_signal、get_trend_4h、should_tighten_tp 等）→ 只在 `strategy.py`
+- 其他文件（backtest、signal、execute、chart）一律 import，不重新实现
+- **绝对禁止**在任何非定义文件中重新实现指标或策略逻辑
 
 **为什么**：2026-02 BB 系统有 4 个独立的 detect_signal 实现，每个 BB 窗口计算方式不同（v1 含当前 bar，v2/v3 不含），导致回测结论与实盘行为不一致。
 
