@@ -16,7 +16,10 @@ def cleanup():
 
     # Check if there's an open position
     positions = client.get_positions(cfg.instId)
-    has_position = any(float(p.get('pos', 0)) != 0 for p in (positions or []))
+    if positions is None:
+        print("⚠️ Cannot check positions (API error) — aborting cleanup to be safe")
+        return
+    has_position = any(float(p.get('pos', 0)) != 0 for p in positions)
 
     if has_position:
         print("⚠️ Open position detected — keeping SL/TP, only cancelling triggers")
