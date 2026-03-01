@@ -106,8 +106,10 @@ class BBExecutor:
             logger.error("No account equity")
             return None
 
-        # Notional value = equity * position_ratio
-        notional = equity * self.cfg.risk.position_ratio
+        # Notional value = equity * position_ratio * leverage
+        # 5x isolated margin: $100 equity can control $500 notional
+        leverage = 5
+        notional = equity * self.cfg.risk.position_ratio * leverage
 
         # Max loss check
         max_loss = notional * self.cfg.risk.stop_loss_pct
