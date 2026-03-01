@@ -142,15 +142,14 @@ def place_stop_loss(coin: str, size: float, trigger_price: float, is_long: bool 
     # For a short position, stop loss is a buy order triggered when price rises
     is_buy = not is_long
     
-    order_result = exchange.order(
+    return _retry_on_429(lambda: exchange.order(
         coin,
         is_buy,
         size,
         trigger_price,  # Use trigger price as limit price for market-like execution
         {"trigger": {"triggerPx": trigger_price, "isMarket": True, "tpsl": "sl"}},
         reduce_only=True
-    )
-    return order_result
+    ))
 
 def place_take_profit(coin: str, size: float, trigger_price: float, is_long: bool = True):
     """Place a take profit order (trigger order)
@@ -174,15 +173,14 @@ def place_take_profit(coin: str, size: float, trigger_price: float, is_long: boo
     # For a short position, take profit is a buy order triggered when price drops
     is_buy = not is_long
     
-    order_result = exchange.order(
+    return _retry_on_429(lambda: exchange.order(
         coin,
         is_buy,
         size,
         trigger_price,
         {"trigger": {"triggerPx": trigger_price, "isMarket": True, "tpsl": "tp"}},
         reduce_only=True
-    )
-    return order_result
+    ))
 
 def get_open_orders():
     """Get open orders (basic info only)"""

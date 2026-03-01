@@ -1126,7 +1126,7 @@ def reconcile_orphan_positions():
             if chain_pos is not None and local_pos is None:
                 # 🚨 孤儿仓位！
                 direction = chain_pos["direction"]
-                entry = float(chain_pos["entryPx"])
+                entry = float(chain_pos["entry_price"])
                 size = abs(chain_pos["size"])
                 is_long = direction == "LONG"
                 

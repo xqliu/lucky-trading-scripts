@@ -28,7 +28,7 @@ def test_orphan_detected_and_fixed(mock_pos, mock_check, mock_sl, mock_tp, mock_
     # BTC: no position on chain. ETH: orphan SHORT
     def fake_pos(coin):
         if coin == "ETH":
-            return {"direction": "SHORT", "entryPx": "2035.4", "size": -0.0093}
+            return {"direction": "SHORT", "entry_price": 2035.4, "size": -0.0093}
         return None
     mock_pos.side_effect = fake_pos
     
