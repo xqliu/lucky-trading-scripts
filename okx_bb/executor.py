@@ -239,6 +239,7 @@ class BBExecutor:
             return False
 
         sl_algo_id = sl_result["data"][0].get("algoId", "") if sl_result["data"] else ""
+        logger.info(f"✅ SL placed: algoId={sl_algo_id} triggerPx=${sl_price:.2f} side={close_side} sz={sz}")
 
         # 3. Take-profit (limit order, reduceOnly to prevent accidental opens)
         tp_result = self.client.place_limit_order(
@@ -254,6 +255,7 @@ class BBExecutor:
             tp_ord_id = ""
         else:
             tp_ord_id = tp_result["data"][0].get("ordId", "") if tp_result["data"] else ""
+            logger.info(f"✅ TP placed: ordId={tp_ord_id} px=${tp_price:.2f} side={close_side} sz={sz}")
 
         # Save position state
         now = datetime.now(timezone.utc).isoformat()
@@ -302,6 +304,7 @@ class BBExecutor:
             result = self.client.place_market_order(
                 self.instId, side, sz, reduceOnly=True
             )
+            logger.info(f"Emergency close attempt {attempt + 1}: side={side} sz={sz} result={result.get('code')} msg={result.get('msg', '')}")
             if result.get("code") == "0":
                 time.sleep(2)
                 # Verify
@@ -428,6 +431,7 @@ class BBExecutor:
                 if tp and abs(fill_price - tp) / tp < 0.005:
                     return "tp"
 
+        logger.info(f"Exit reason: unknown (SL algo={pos.get('sl_algo_id')}, TP ord={pos.get('tp_order_id')})")
         return "unknown"
 
     def _cancel_remaining_orders(self, pos: dict):

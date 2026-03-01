@@ -207,24 +207,20 @@ class OKXClient:
 
     def place_market_order(self, instId: str, side: str,
                            sz: str, reduceOnly: bool = False) -> dict:
-        """Place market order.
-
-        Args:
-            instId: e.g. "ETH-USDT-SWAP"
-            side: "buy" or "sell"
-            sz: Size in contracts
-            reduceOnly: Close-only order
-        """
+        """Place market order."""
         body = {
             "instId": instId,
-            "tdMode": "isolated",  # isolated margin
+            "tdMode": "isolated",
             "side": side,
             "ordType": "market",
             "sz": sz,
         }
         if reduceOnly:
             body["reduceOnly"] = "true"
-        return self._request("POST", "/trade/order", body=body)
+        logger.info(f"ORDER market {side} {sz} {instId} reduceOnly={reduceOnly}")
+        result = self._request("POST", "/trade/order", body=body)
+        logger.info(f"ORDER result: code={result.get('code')} data={result.get('data', [{}])[0] if result.get('data') else 'none'}")
+        return result
 
     def place_limit_order(self, instId: str, side: str,
                           sz: str, px: str,
@@ -240,15 +236,14 @@ class OKXClient:
         }
         if reduceOnly:
             body["reduceOnly"] = "true"
-        return self._request("POST", "/trade/order", body=body)
+        logger.info(f"ORDER limit {side} {sz} {instId} px={px} reduceOnly={reduceOnly}")
+        result = self._request("POST", "/trade/order", body=body)
+        logger.info(f"ORDER result: code={result.get('code')} data={result.get('data', [{}])[0] if result.get('data') else 'none'}")
+        return result
 
     def place_stop_order(self, instId: str, side: str, sz: str,
                          slTriggerPx: str, slOrdPx: str = "-1") -> dict:
-        """Place stop-loss order (algo order).
-
-        Args:
-            slOrdPx: "-1" means market price on trigger
-        """
+        """Place stop-loss order (algo order)."""
         body = {
             "instId": instId,
             "tdMode": "isolated",
@@ -259,18 +254,15 @@ class OKXClient:
             "slOrdPx": slOrdPx,
             "slTriggerPxType": "last",
         }
-        return self._request("POST", "/trade/order-algo", body=body)
+        logger.info(f"ALGO SL {side} {sz} {instId} triggerPx={slTriggerPx} ordPx={slOrdPx}")
+        result = self._request("POST", "/trade/order-algo", body=body)
+        logger.info(f"ALGO SL result: code={result.get('code')} data={result.get('data', [{}])[0] if result.get('data') else 'none'}")
+        return result
 
     def place_trigger_order(self, instId: str, side: str, sz: str,
                             triggerPx: str, orderPx: str = "-1",
                             triggerPxType: str = "last") -> dict:
-        """Place a trigger (conditional) order — fires market order when price hits trigger.
-
-        Args:
-            triggerPx: Price that triggers the order
-            orderPx: "-1" for market order on trigger
-            triggerPxType: "last", "index", or "mark"
-        """
+        """Place a trigger (conditional) order — fires when price hits trigger."""
         body = {
             "instId": instId,
             "tdMode": "isolated",
@@ -281,15 +273,20 @@ class OKXClient:
             "orderPx": orderPx,
             "triggerPxType": triggerPxType,
         }
-        return self._request("POST", "/trade/order-algo", body=body)
+        logger.info(f"ALGO trigger {side} {sz} {instId} triggerPx={triggerPx} orderPx={orderPx}")
+        result = self._request("POST", "/trade/order-algo", body=body)
+        logger.info(f"ALGO trigger result: code={result.get('code')} data={result.get('data', [{}])[0] if result.get('data') else 'none'}")
+        return result
 
     def cancel_order(self, instId: str, ordId: str) -> dict:
         """Cancel a regular order."""
+        logger.info(f"CANCEL order {ordId} {instId}")
         return self._request("POST", "/trade/cancel-order",
                              body={"instId": instId, "ordId": ordId})
 
     def cancel_algo_order(self, algoId: str, instId: str) -> dict:
-        """Cancel an algo order (stop-loss/take-profit)."""
+        """Cancel an algo order (stop-loss/take-profit/trigger)."""
+        logger.info(f"CANCEL algo {algoId} {instId}")
         return self._request("POST", "/trade/cancel-algos",
                              body=[{"algoId": algoId, "instId": instId}])
 
