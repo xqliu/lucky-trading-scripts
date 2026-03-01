@@ -411,6 +411,28 @@ class WSMonitor:
         self._entry_in_progress = True
         try:
             await self._on_entry_filled_inner(direction, fill_price, fill_sz)
+        except Exception as e:
+            logger.error(f"CRITICAL: _on_entry_filled exception: {e}", exc_info=True)
+            # Position may exist without SL — check and emergency close
+            try:
+                positions = await self._rest_exchange("get_positions", self.cfg.instId)
+                if positions and any(float(p.get("pos", 0)) != 0 for p in positions):
+                    pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
+                    pv = float(pos_info.get("pos", 0))
+                    close_side = "sell" if pv > 0 else "buy"
+                    # Check if SL exists
+                    algos = await self._rest_exchange("get_algo_orders", self.cfg.instId, "conditional")
+                    if not any(a.get("slTriggerPx") for a in algos):
+                        logger.error("No SL after exception — emergency close!")
+                        await self._rest_exchange("place_market_order",
+                            self.cfg.instId, close_side, f"{abs(pv):.2f}", True)
+                        self.executor.save_position(None)
+                        send_discord(f"{MSG_PREFIX}🚨 入场处理异常且无SL → 紧急平仓\n{e}", mention=True)
+                    else:
+                        logger.info("SL exists despite exception — position safe")
+            except Exception as e2:
+                logger.error(f"Exception during exception handling: {e2}", exc_info=True)
+                send_discord(f"{MSG_PREFIX}🚨🚨 入场处理双重异常！需要手动检查！\n{e}\n{e2}", mention=True)
         finally:
             self._entry_in_progress = False
 
@@ -727,7 +749,10 @@ class WSMonitor:
                     if elapsed > self.TRIGGER_FILL_TIMEOUT:
                         logger.warning(f"Trigger fired {elapsed:.0f}s ago but no fill — checking exchange")
                         positions = await self._rest_exchange("get_positions", self.cfg.instId)
-                        has_pos = positions and any(float(p.get("pos", 0)) != 0 for p in positions)
+                        if positions is None:
+                            logger.warning("API error during trigger timeout check, will retry next cycle")
+                            continue
+                        has_pos = any(float(p.get("pos", 0)) != 0 for p in positions)
                         if has_pos:
                             # Position exists — fill happened but WS missed it
                             logger.info("Position found, processing as late fill")
@@ -934,7 +959,7 @@ class WSMonitor:
         self._running = True
 
         # Set leverage once at startup (before any algo orders exist)
-        lev_result = await self._rest_exchange("set_leverage", self.cfg.instId, "5", "isolated")
+        lev_result = await self._rest_exchange("set_leverage", self.cfg.instId, str(self.cfg.risk.leverage), "isolated")
         if isinstance(lev_result, dict) and lev_result.get("code") != "0":
             logger.warning(f"set_leverage result: {lev_result.get('msg', lev_result)}")
 

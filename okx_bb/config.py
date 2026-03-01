@@ -37,6 +37,7 @@ class RiskConfig:
     max_hold_bars: int = 120  # 60h on 30m candles
     position_ratio: float = 0.30
     max_single_loss: float = 10.0  # $10
+    leverage: int = 5
 
 
 @dataclass
@@ -91,6 +92,7 @@ def load_config() -> OKXConfig:
                 max_hold_bars=r.get("max_hold_bars", 120),
                 position_ratio=r.get("position_ratio", 0.30),
                 max_single_loss=r.get("max_single_loss", 10.0),
+                leverage=r.get("leverage", 5),
             )
         if "fees" in raw:
             fe = raw["fees"]
