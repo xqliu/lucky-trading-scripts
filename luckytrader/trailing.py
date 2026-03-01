@@ -200,17 +200,17 @@ def check_and_update_trailing_stop(coin: str, position: dict, state: dict):
     # 1) 未激活时：初始止损用 regime_sl_pct（开仓时由 execute.py 确定）
     # 2) 激活后：移动止损 = 最高价 * (1 - TRAILING_PCT)，但不低于入场价
     if is_long:
-        initial_stop = entry_price * (1 - regime_initial_sl_pct)
+        initial_stop = round(entry_price * (1 - regime_initial_sl_pct))
         if trailing_active:
-            trailing_stop = high_water_mark * (1 - TRAILING_PCT)
+            trailing_stop = round(high_water_mark * (1 - TRAILING_PCT))
             # 移动止损不低于入场价（保本线）
             new_stop = max(trailing_stop, entry_price)
         else:
             new_stop = initial_stop
     else:
-        initial_stop = entry_price * (1 + regime_initial_sl_pct)
+        initial_stop = round(entry_price * (1 + regime_initial_sl_pct))
         if trailing_active:
-            trailing_stop = high_water_mark * (1 + TRAILING_PCT)
+            trailing_stop = round(high_water_mark * (1 + TRAILING_PCT))
             # 移动止损不高于入场价（保本线）
             new_stop = min(trailing_stop, entry_price)
         else:
