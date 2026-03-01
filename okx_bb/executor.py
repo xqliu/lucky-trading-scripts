@@ -174,8 +174,8 @@ class BBExecutor:
         side = "buy" if direction == "LONG" else "sell"
         close_side = "sell" if direction == "LONG" else "buy"
 
-        # Set leverage first
-        self.client.set_leverage(self.instId, str(self.cfg.risk.leverage), "isolated")
+        # NOTE: set_leverage is done at startup (ws_monitor.run), NOT here.
+        # Calling set_leverage when algo orders exist throws OKX error 59668.
 
         # 1. Market order
         logger.info(f"Opening {direction} {sz} contracts on {self.instId}")

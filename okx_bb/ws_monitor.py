@@ -860,11 +860,17 @@ class WSMonitor:
                             pv = float(pos_info.get("pos", 0))
                             d = "LONG" if pv > 0 else "SHORT"
                             ap = float(pos_info.get("avgPx", 0))
+                            if d == "LONG":
+                                sl_p_est = ap * (1 - self.cfg.risk.stop_loss_pct)
+                                tp_p_est = ap * (1 + self.cfg.risk.take_profit_pct)
+                            else:
+                                sl_p_est = ap * (1 + self.cfg.risk.stop_loss_pct)
+                                tp_p_est = ap * (1 - self.cfg.risk.take_profit_pct)
                             self.executor.save_position({
                                 "direction": d, "entry_price": ap,
                                 "size": f"{abs(pv):.2f}",
-                                "sl_price": ap * (0.98 if d == "LONG" else 1.02),
-                                "tp_price": ap * (1.03 if d == "LONG" else 0.97),
+                                "sl_price": sl_p_est,
+                                "tp_price": tp_p_est,
                                 "sl_algo_id": next((a["algoId"] for a in algos), ""),
                                 "tp_order_id": "",
                                 "entry_time": datetime.now(timezone.utc).isoformat(),
