@@ -42,6 +42,7 @@ class BBExecutor:
             self.cfg.api_key, self.cfg.secret_key, self.cfg.passphrase
         )
         self.instId = self.cfg.instId
+        self._inst_cache = None  # Cached instrument info
 
     # === State Management ===
 
@@ -113,8 +114,10 @@ class BBExecutor:
         if max_loss > self.cfg.risk.max_single_loss:
             notional = self.cfg.risk.max_single_loss / self.cfg.risk.stop_loss_pct
 
-        # Get instrument info for contract multiplier
-        inst = self.client.get_instrument(self.instId)
+        # Get instrument info (cached)
+        if not self._inst_cache:
+            self._inst_cache = self.client.get_instrument(self.instId)
+        inst = self._inst_cache
         if not inst:
             logger.error("Failed to get instrument info")
             return None
@@ -133,6 +136,13 @@ class BBExecutor:
         # Round down to lot size precision
         contracts = int(contracts / lotSz) * lotSz
         if contracts < minSz:
+            # Check if minSz exceeds risk limits before forcing it
+            min_notional = minSz * ctVal * price
+            min_loss = min_notional * self.cfg.risk.stop_loss_pct
+            if min_loss > self.cfg.risk.max_single_loss:
+                logger.warning(f"minSz ${min_notional:.2f} exceeds max_single_loss "
+                               f"(loss=${min_loss:.2f} > ${self.cfg.risk.max_single_loss})")
+                return None
             contracts = minSz
 
         logger.info(f"Position sizing: equity=${equity:.2f}, "

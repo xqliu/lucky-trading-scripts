@@ -290,6 +290,11 @@ class WSMonitor:
 
             self._save_pending()
 
+            # Recheck: trigger may have fired during cancel awaits
+            if self._triggered_direction or self._entry_in_progress:
+                logger.info("Trigger fired during cancel, aborting place")
+                return
+
             # Check position (exchange-verified)
             positions = await self._rest_exchange("get_positions", self.cfg.instId)
             if positions is None:
@@ -298,6 +303,10 @@ class WSMonitor:
             if any(float(p.get("pos", 0)) != 0 for p in positions):
                 return
             if self.executor.load_position():
+                return
+
+            # Final recheck before placing
+            if self._triggered_direction or self._entry_in_progress:
                 return
 
             # Place new triggers
@@ -804,7 +813,9 @@ class WSMonitor:
         self._running = True
 
         # Set leverage once at startup (before any algo orders exist)
-        await self._rest_exchange("set_leverage", self.cfg.instId, "5", "isolated")
+        lev_result = await self._rest_exchange("set_leverage", self.cfg.instId, "5", "isolated")
+        if isinstance(lev_result, dict) and lev_result.get("code") != "0":
+            logger.warning(f"set_leverage result: {lev_result.get('msg', lev_result)}")
 
         for s in (sig.SIGINT, sig.SIGTERM):
             self._loop.add_signal_handler(s, self._shutdown)
