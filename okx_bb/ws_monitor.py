@@ -833,7 +833,7 @@ class WSMonitor:
                 await self._atomic_cancel_and_place()
 
         send_discord(
-            f"{MSG_PREFIX}🟢 OKX BB v2.3 启动\n"
+            f"🟢 OKX BB v2.3 启动\n"
             f"{self.cfg.instId} BB({self.cfg.strategy.bb_period}, "
             f"{self.cfg.strategy.bb_multiplier})\n"
             f"K线: {len(self.accumulator.closes)} bars")
@@ -849,7 +849,7 @@ class WSMonitor:
         logger.info("Shutdown signal received")
         self._running = False
         # Don't do blocking REST here — ExecStop cleanup.py handles it
-        send_discord(f"{MSG_PREFIX}🔴 OKX BB Monitor 停止")
+        send_discord(f"🔴 OKX BB Monitor 停止")
 
 
 def main():
