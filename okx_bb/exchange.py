@@ -74,7 +74,7 @@ class OKXClient:
 
     def _request(self, method: str, endpoint: str,
                  params: Optional[dict] = None,
-                 body: Optional[dict] = None) -> dict:
+                 body: Optional[Any] = None) -> dict:
         """Make authenticated API request with retry on 429."""
         path = API_PREFIX + endpoint
         url = BASE_URL + path

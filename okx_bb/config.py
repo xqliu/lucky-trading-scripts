@@ -98,7 +98,19 @@ def load_config() -> OKXConfig:
                 maker_fee=fe.get("maker_fee", 0.0002),
             )
 
-    cfg = OKXConfig(strategy=strategy, risk=risk, fees=fees)
+    # Exchange settings
+    coin = "ETH"
+    instId = "ETH-USDT-SWAP"
+    discord_channel_id = "1469405365849313831"
+    if "exchange" in raw:
+        ex = raw["exchange"]
+        coin = ex.get("coin", coin)
+        instId = ex.get("instId", instId)
+    if "notifications" in raw:
+        discord_channel_id = raw["notifications"].get("discord_channel_id", discord_channel_id)
+
+    cfg = OKXConfig(strategy=strategy, risk=risk, fees=fees,
+                    coin=coin, instId=instId, discord_channel_id=discord_channel_id)
 
     # Load secrets
     secrets_path = config_dir / ".okx_config"

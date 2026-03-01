@@ -479,7 +479,7 @@ class BBExecutor:
             "timeout": ExitReason.TIMEOUT,
             "unknown": ExitReason.TIMEOUT,  # unknown exit reason — don't mislabel as TP
         }
-        exit_reason = reason_map.get(reason, ExitReason.TP)
+        exit_reason = reason_map.get(reason, ExitReason.TIMEOUT)
 
         result = TradeResult(
             coin=self.cfg.coin,
