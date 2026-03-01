@@ -134,11 +134,11 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
         except Exception as e:
             logger.warning(f"Failed to get support/resistance levels: {e}")
     
-    # 获取持仓信息
+    # 获取持仓信息（per-coin）
     if position is None:
         try:
             from luckytrader.execute import load_state
-            state = load_state()
+            state = load_state(coin)
             if state.get('position'):
                 position = state['position']
         except Exception as e:
@@ -252,7 +252,7 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
     change_pct = (current - prev) / prev * 100
     price_color = UP_COLOR if current >= prev else DOWN_COLOR
     
-    title = f'BTC/USD  30m  ${current:,.0f}  ({change_pct:+.2f}%)'
+    title = f'{coin}/USD  30m  ${current:,.0f}  ({change_pct:+.2f}%)'
     ax1.set_title(title, color=price_color, fontsize=11, fontweight='bold', pad=8)
     
     # 图例
@@ -285,7 +285,7 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
     if output_path is None:
         chart_dir = Path.home() / '.openclaw/workspace/logs/charts'
         chart_dir.mkdir(parents=True, exist_ok=True)
-        output_path = str(chart_dir / f'btc_30m_{datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")}.png')
+        output_path = str(chart_dir / f'{coin.lower()}_30m_{datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")}.png')
     
     fig.savefig(output_path, dpi=150, facecolor=BG_COLOR)
     plt.close(fig)
@@ -301,7 +301,7 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
     return output_path
 
 
-def send_chart_to_discord(image_path: str, caption: str = "📊 BTC 30m K线",
+def send_chart_to_discord(image_path: str, caption: str = "📊 30m K线",
                           channel_id: str = None):
     """通过 Spacebar REST API 直接发送图片到 Discord 频道"""
     import subprocess, json
@@ -349,20 +349,42 @@ def send_chart_to_discord(image_path: str, caption: str = "📊 BTC 30m K线",
 
 if __name__ == '__main__':
     import sys, json, pathlib
+    from luckytrader.config import TRADING_COINS
     send = '--send' in sys.argv
-    # 读取持仓状态，让图表画 SL/TP 线
-    pos_data = None
+
+    # 支持 --coin BTC 指定单个币种，默认全部
+    coins = TRADING_COINS
+    for i, arg in enumerate(sys.argv):
+        if arg == '--coin' and i + 1 < len(sys.argv):
+            coins = [sys.argv[i + 1].upper()]
+
+    # 读取持仓状态（per-coin）
+    pos_states = {}
     try:
-        state_path = pathlib.Path(__file__).resolve().parent.parent.parent.parent / 'memory' / 'trading' / 'position_state.json'
-        state = json.loads(state_path.read_text())
-        if state.get('position'):
-            pos_data = state['position']
+        from luckytrader.config import get_workspace_dir
+        state_path = get_workspace_dir() / 'memory' / 'trading' / 'position_state.json'
+        all_state = json.loads(state_path.read_text())
+        # 新格式: {"BTC": {"position": ...}, "ETH": {"position": ...}}
+        # 旧格式: {"position": ...}
+        if "position" in all_state and not any(c in all_state for c in TRADING_COINS):
+            # 旧格式
+            pos = all_state.get("position")
+            if pos:
+                pos_states[pos.get("coin", "BTC")] = pos
+        else:
+            for c in TRADING_COINS:
+                coin_state = all_state.get(c, {})
+                if coin_state.get("position"):
+                    pos_states[c] = coin_state["position"]
     except Exception as e:
         logger.warning(f"Failed to load position for chart CLI: {e}")
-    path = generate_chart(position=pos_data)
-    if path:
-        print(f'Chart saved: {path}')
-        if send:
-            send_chart_to_discord(path)
-    else:
-        print('Failed to generate chart')
+
+    for coin in coins:
+        pos_data = pos_states.get(coin)
+        path = generate_chart(coin=coin, position=pos_data)
+        if path:
+            print(f'{coin} chart saved: {path}')
+            if send:
+                send_chart_to_discord(path, caption=f"📊 {coin} 30m K线")
+        else:
+            print(f'Failed to generate {coin} chart')

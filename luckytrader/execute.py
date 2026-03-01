@@ -774,23 +774,63 @@ def close_and_cleanup(coin: str, is_long: bool, size: float, reason: str,
 
 
 def emergency_close(coin, size, is_long, max_retries=3):
-    """紧急市价平仓 — 带重试和持久化告警"""
+    """紧急市价平仓 — 带重试和持久化告警
+    
+    关键安全措施：每次重试前检查链上仓位是否还在。
+    防止 "平仓成功但 SDK 抛异常" → 再次 SELL → 开反向仓位。
+    """
     print(f"🚨 紧急平仓 {coin} size={size}")
     
     for attempt in range(1, max_retries + 1):
+        # 🔒 每次重试前必须确认链上仓位还在（防止反向开仓）
+        if attempt > 1:
+            wait_secs = max(5, 2 ** attempt)  # 至少等 5 秒（429 cooldown）
+            print(f"⏳ 等待 {wait_secs}s 后检查链上仓位...")
+            time.sleep(wait_secs)
+            
+            # 仓位检查本身也可能 429，重试 3 次
+            check_succeeded = False
+            real_pos = "UNKNOWN"
+            for check_attempt in range(3):
+                try:
+                    real_pos = get_position(coin)
+                    check_succeeded = True
+                    break
+                except Exception as e:
+                    print(f"⚠️ 仓位检查 attempt {check_attempt+1}/3 失败: {e}")
+                    time.sleep(3)
+            
+            if not check_succeeded:
+                # 3 次都查不到 → 大概率 429 还在，不能盲目重试平仓
+                print(f"🚨 仓位检查连续 3 次失败（API 限速），中止重试（防止开反向仓）")
+                logger.error(f"emergency_close aborted: position check failed 3 times for {coin}, refusing to retry (risk of opening reverse position)")
+                break  # 跳出 → 走到 danger 告警
+            
+            if real_pos is None:
+                # get_position 返回 None = 链上无仓位，平仓已生效
+                print(f"✅ 链上 {coin} 已无仓位（前次平仓已生效），跳过重试")
+                save_state({"position": None}, coin)
+                log_trade("EMERGENCY_CLOSE", coin, "LONG" if is_long else "SHORT", size,
+                          get_market_price(coin), reason=f"SL/TP设置失败紧急平仓 (confirmed after attempt {attempt-1})")
+                return
+        
         try:
             result = place_market_order(coin, not is_long, size)
             print(f"平仓结果 (attempt {attempt}): {json.dumps(result, indent=2)}")
             if result.get("status") == "err":
                 raise Exception(f"Order error: {result}")
+            # 平仓成功后验证链上状态
+            time.sleep(1)
+            verify_pos = get_position(coin)
+            if verify_pos is not None:
+                print(f"⚠️ 平仓指令成功但链上仍有仓位，可能部分成交，继续重试")
+                continue
             save_state({"position": None}, coin)
             log_trade("EMERGENCY_CLOSE", coin, "LONG" if is_long else "SHORT", size, 
                       get_market_price(coin), reason=f"SL/TP设置失败紧急平仓 (attempt {attempt})")
             return  # success
         except Exception as e:
             print(f"❌ 紧急平仓 attempt {attempt}/{max_retries} 失败: {e}")
-            if attempt < max_retries:
-                time.sleep(2 ** attempt)  # exponential backoff
     
     # All retries failed — persist danger state, alert, and RAISE
     print("❌❌ 紧急平仓全部失败！持久化告警...")
@@ -1042,6 +1082,96 @@ def fix_sl_tp(position, coin=None):
             print("✅ 止盈已补设")
         except Exception as e:
             print(f"❌ 止盈补设失败: {e}, 止损已在，继续持仓")
+
+def reconcile_orphan_positions():
+    """检测链上孤儿仓位（链上有仓位但 state 为空）并自动修复。
+    
+    场景：emergency_close 竞态导致反向开仓，state 被清空但链上有仓。
+    修复：重建 state + 设置 SL/TP，避免裸仓运行。
+    
+    Returns: list of reconciled positions, empty if all consistent.
+    """
+    reconciled = []
+    for coin in TRADING_COINS:
+        try:
+            chain_pos = get_position(coin)
+            local_state = load_state(coin)
+            local_pos = local_state.get("position")
+            
+            if chain_pos is not None and local_pos is None:
+                # 🚨 孤儿仓位！
+                direction = chain_pos["direction"]
+                entry = float(chain_pos["entryPx"])
+                size = abs(chain_pos["size"])
+                is_long = direction == "LONG"
+                
+                logger.warning(f"🚨 Orphan position detected: {direction} {coin} {size} @ ${entry:,.2f}")
+                
+                # 用 config 默认参数设 SL/TP
+                sl_pct = STOP_LOSS_PCT
+                tp_pct = TAKE_PROFIT_PCT
+                
+                if is_long:
+                    sl_price = round(entry * (1 - sl_pct))
+                    tp_price = round(entry * (1 + tp_pct))
+                else:
+                    sl_price = round(entry * (1 + sl_pct))
+                    tp_price = round(entry * (1 - tp_pct))
+                
+                # 检查是否已有 SL
+                sl_exists, tp_exists = check_sl_tp_orders(coin, {"coin": coin, "direction": direction})
+                
+                if not sl_exists:
+                    try:
+                        place_stop_loss(coin, size, sl_price, is_long)
+                        print(f"  ✅ 补设止损 ${sl_price:,.2f}")
+                    except Exception as e:
+                        logger.error(f"  ❌ 补设止损失败: {e}")
+                
+                if not tp_exists:
+                    try:
+                        place_take_profit(coin, size, tp_price, is_long)
+                        print(f"  ✅ 补设止盈 ${tp_price:,.2f}")
+                    except Exception as e:
+                        logger.error(f"  ❌ 补设止盈失败: {e}")
+                
+                # 重建 state
+                new_state = {
+                    "position": {
+                        "coin": coin,
+                        "direction": direction,
+                        "entry_price": entry,
+                        "size": size if is_long else -size,
+                        "entry_time": datetime.now(timezone.utc).isoformat(),
+                        "regime": "unknown",
+                        "regime_tp_pct": tp_pct,
+                        "regime_sl_pct": sl_pct,
+                        "orphan_reconciled": True,
+                        "deadline": (datetime.now(timezone.utc) + timedelta(hours=MAX_HOLD_HOURS)).isoformat(),
+                    }
+                }
+                save_state(new_state, coin)
+                
+                notify_discord(
+                    f"🚨 **孤儿仓位修复** {direction} {coin}\n"
+                    f"💰 入场: ${entry:,.2f} | 数量: {size}\n"
+                    f"🛑 SL: ${sl_price:,.2f} | 🎯 TP: ${tp_price:,.2f}\n"
+                    f"⚠️ State 已重建，使用默认参数\n"
+                    f"<@111111111111111111> <@222222222222222222>"
+                )
+                
+                reconciled.append({"coin": coin, "direction": direction, "size": size, "entry": entry})
+                
+            elif chain_pos is None and local_pos is not None:
+                # State 有仓位但链上没有 → SL/TP 已触发，清理 state
+                logger.info(f"Stale state for {coin}: local has position but chain empty, cleaning up")
+                save_state({"position": None}, coin)
+                
+        except Exception as e:
+            logger.error(f"reconcile_orphan_positions error for {coin}: {e}")
+    
+    return reconciled
+
 
 if __name__ == "__main__":
     import sys

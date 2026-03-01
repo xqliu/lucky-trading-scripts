@@ -447,7 +447,10 @@ class TestEmergencyCloseFailurePropagation:
 
         mock_hl.place_market_order.return_value = {"status": "err", "response": "Exchange down"}
 
-        with pytest.raises(RuntimeError, match="紧急平仓失败"):
+        # Position always exists (never closes)
+        with pytest.raises(RuntimeError, match="紧急平仓失败"), \
+             patch('luckytrader.execute.get_position',
+                   return_value={"direction": "LONG", "size": 0.001}):
             emergency_close("BTC", 0.001, True, max_retries=2)
 
     @patch('luckytrader.execute.log_trade')
@@ -457,7 +460,8 @@ class TestEmergencyCloseFailurePropagation:
 
         mock_hl.place_market_order.return_value = {"status": "ok"}
 
-        with patch('luckytrader.execute.save_state'):
+        with patch('luckytrader.execute.save_state'), \
+             patch('luckytrader.execute.get_position', return_value=None):
             # Should not raise
             emergency_close("BTC", 0.001, True)
 
