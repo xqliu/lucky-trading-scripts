@@ -69,6 +69,7 @@ def load_config() -> OKXConfig:
     strategy = StrategyConfig()
     risk = RiskConfig()
     fees = FeeConfig()
+    raw = {}
 
     if toml_path.exists():
         with open(toml_path, "rb") as f:
