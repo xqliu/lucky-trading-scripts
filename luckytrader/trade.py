@@ -34,9 +34,10 @@ try:
     MAIN_WALLET = _c["MAIN_WALLET"]
     API_WALLET = _c["API_WALLET"]
     API_PRIVATE_KEY = _c["API_PRIVATE_KEY"]
-except (FileNotFoundError, ValueError):
-    # Allow import without config for testing
-    pass
+except (FileNotFoundError, ValueError) as e:
+    # Allow import without config for testing/CI
+    import logging as _logging
+    _logging.getLogger(__name__).debug(f"Config not loaded (OK for testing): {e}")
 
 def get_account_info():
     """Get account balance and positions"""

@@ -4,10 +4,13 @@ BTC K线图生成器
 生成最近 48 根 30m K线的蜡烛图，标注支撑/阻力位、EMA、当前持仓
 输出 PNG 文件路径
 """
+import logging
 import matplotlib
 matplotlib.use('Agg')  # 无头模式
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+
+logger = logging.getLogger(__name__)
 from matplotlib.patches import FancyBboxPatch
 from datetime import datetime, timezone, timedelta
 import tempfile
@@ -128,8 +131,8 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
             result = analyze(coin)
             supports = result.get('supports', [])
             resistances = result.get('resistances', [])
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to get support/resistance levels: {e}")
     
     # 获取持仓信息
     if position is None:
@@ -138,7 +141,8 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
             state = load_state()
             if state.get('position'):
                 position = state['position']
-        except:
+        except Exception as e:
+            logger.warning(f"Failed to load position state for chart: {e}")
             pass
     
     # MACD（用更多数据避免前几根不准）
@@ -292,7 +296,7 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
         _sp.run(['oxipng', '-o', '4', '--strip', 'safe', '-q', output_path],
                 timeout=10, check=False)
     except FileNotFoundError:
-        pass  # oxipng 没装就跳过
+        logger.debug("oxipng not installed, skipping PNG optimization")
     
     return output_path
 
@@ -353,8 +357,8 @@ if __name__ == '__main__':
         state = json.loads(state_path.read_text())
         if state.get('position'):
             pos_data = state['position']
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to load position for chart CLI: {e}")
     path = generate_chart(position=pos_data)
     if path:
         print(f'Chart saved: {path}')

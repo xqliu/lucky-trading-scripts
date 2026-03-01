@@ -11,10 +11,13 @@ Lucky Trading Executor v5.1
 5. 仓位大小 = 账户净值的 30%（含杠杆后的名义价值）
 """
 import json
+import logging
 import sys
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from luckytrader.signal import analyze, get_recent_fills, get_candles
 from luckytrader.regime import compute_de, get_regime_params
 from luckytrader.strategy import should_tighten_tp, compute_tp_price, compute_pnl_pct
@@ -263,7 +266,8 @@ def _acquire_lock(coin: str = "BTC"):
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fd._lock_path = lock_file  # stash path for cleanup
         return fd
-    except OSError:
+    except OSError as e:
+        logger.debug(f"Lock acquisition failed for {coin} (another instance running): {e}")
         fd.close()
         return None
 
@@ -276,8 +280,8 @@ def _release_lock(fd):
         if lock_path:
             try:
                 lock_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Lock file cleanup failed: {e}")
 
 def execute(dry_run=False, coin=None):
     """主执行流程。dry_run=True 时只分析不下单。
@@ -332,8 +336,8 @@ def _check_cooldown(coin: str = "BTC"):
                 remaining = _COOLDOWN_SECONDS - elapsed
                 print(f"⚠️ {coin} 冷却中：上次开仓 {elapsed:.0f}s 前，还需等待 {remaining:.0f}s")
                 return False
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Cooldown check failed (treating as no cooldown): {e}")
     return True
 
 def _set_cooldown(coin: str = "BTC"):
@@ -408,6 +412,7 @@ def _execute_inner(dry_run, mode, _CST, coin="BTC"):
                         record_trade_result(pnl_pct, position["direction"], coin, "SL_TP_AUTO")
                         return {"action": "STALE_STATE_CLEANED", "elapsed": elapsed}
                 except RuntimeError as e:
+                    logger.error(f"Timeout close failed for {coin}: {e}")
                     return {"action": "CLOSE_FAILED", "error": str(e)}
                 record_trade_result(pnl_pct, position["direction"], coin, "TIMEOUT")
                 notify_discord(f"⏰ **超时平仓** {position['direction']} {coin}\n💰 入场: ${position['entry_price']:,.2f}\n📊 盈亏: {pnl_pct:+.2f}% | 持仓 {elapsed:.1f}h")
@@ -619,6 +624,7 @@ def open_position(signal, analysis, coin="BTC"):
         try:
             emergency_close(coin, actual_size, is_long)
         except RuntimeError as close_err:
+            logger.error(f"Emergency close failed after SL setup failure: {close_err}")
             return {"action": "EMERGENCY_CLOSE_FAILED", "error": str(close_err)}
         return {"action": "SL_FAILED_CLOSED", "error": str(e)}
     
@@ -643,6 +649,7 @@ def open_position(signal, analysis, coin="BTC"):
         try:
             emergency_close(coin, actual_size, is_long)
         except RuntimeError as close_err:
+            logger.error(f"Emergency close failed after TP setup failure: {close_err}")
             return {"action": "EMERGENCY_CLOSE_FAILED", "error": str(close_err)}
         return {"action": "TP_FAILED_CLOSED", "error": str(e)}
     
@@ -695,6 +702,76 @@ def open_position(signal, analysis, coin="BTC"):
         "regime_tp_pct": tp_pct,
         "regime_sl_pct": sl_pct,
     }
+
+def close_and_cleanup(coin: str, is_long: bool, size: float, reason: str,
+                      pnl_pct: float = None, extra_msg: str = ""):
+    """通用平仓 + 清理函数 — 所有平仓逻辑的单一入口。
+
+    执行：市价平仓 → 取消挂单 → 记录交易 → 清理 state → Discord 通知。
+
+    Args:
+        coin: 币种
+        is_long: 仓位方向
+        size: 仓位大小
+        reason: 平仓原因（用于 log_trade action 和通知）
+        pnl_pct: 已计算的盈亏百分比（None 则自动从链上计算）
+        extra_msg: 附加到 Discord 通知的额外信息
+    
+    Returns:
+        dict with close_price, pnl_pct, reason
+    
+    Raises:
+        Exception: 如果市价平仓失败
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    direction = "LONG" if is_long else "SHORT"
+    
+    # 1. 市价平仓
+    result = place_market_order(coin, not is_long, size)
+    if result.get("status") == "err":
+        raise Exception(f"close_and_cleanup order error: {result}")
+    
+    close_price = get_market_price(coin)
+    
+    # 2. 计算盈亏（如未提供）
+    if pnl_pct is None:
+        state = load_state(coin)
+        entry = state.get("position", {}).get("entry_price")
+        if entry:
+            pnl_pct = compute_pnl_pct(direction, entry, close_price)
+        else:
+            pnl_pct = 0.0
+            logger.warning("close_and_cleanup: no entry_price in state, pnl_pct=0")
+    
+    # 3. 取消所有挂单
+    try:
+        for o in get_open_orders_detailed(coin):
+            if o.get("isTrigger"):
+                cancel_order(coin, o["oid"])
+    except Exception as e:
+        logger.error(f"close_and_cleanup: failed to cancel orders: {e}")
+    
+    # 4. 记录交易
+    record_trade_result(pnl_pct, direction, coin, reason)
+    log_trade(reason, coin, direction, size, close_price, None, None,
+              f"{reason}: PnL {pnl_pct:+.2f}% {extra_msg}")
+    
+    # 5. 清理 state
+    save_state({"position": None}, coin)
+    
+    # 6. Discord 通知
+    notify_discord(
+        f"{'❌' if pnl_pct < 0 else '✅'} **{reason}** {direction} {coin}\n"
+        f"💰 平仓价: ~${close_price:,.2f} | 盈亏: {pnl_pct:+.2f}%\n"
+        f"{extra_msg}\n"
+        f"<@111111111111111111> <@222222222222222222>"
+    )
+    
+    logger.info(f"close_and_cleanup: {reason} {direction} {coin} pnl={pnl_pct:+.2f}%")
+    return {"close_price": close_price, "pnl_pct": pnl_pct, "reason": reason}
+
 
 def emergency_close(coin, size, is_long, max_retries=3):
     """紧急市价平仓 — 带重试和持久化告警"""
@@ -861,44 +938,19 @@ def reeval_regime_tp(position):
     # 检查当前价是否已经超过新 TP（浮盈已超额）
     try:
         current_price = get_market_price(coin)
-        if is_long and current_price >= new_tp_price:
+        should_close = (is_long and current_price >= new_tp_price) or \
+                       (not is_long and current_price <= new_tp_price)
+        if should_close:
             print(f"   💰 当前价 ${current_price:,.0f} 已超过新 TP ${new_tp_price:,.0f}，市价平仓")
-            from luckytrader.trade import place_market_order
-            place_market_order(coin, False, size)
-            # 记录交易 + 清理状态
-            pnl_pct = (current_price - entry) / entry * 100
-            record_trade_result(pnl_pct, "LONG", coin, "REGIME_TP")
-            log_trade("CLOSED_BY_REGIME", coin, "LONG", size, current_price, None, None,
-                      f"Regime {old_regime}→{new_regime}, TP收紧触发平仓, PnL {pnl_pct:+.2f}%")
-            # 取消所有挂单（SL/TP）
-            try:
-                for o in get_open_orders_detailed(coin):
-                    if o.get("isTrigger"):
-                        cancel_order(coin, o["oid"])
-            except Exception as e:
-                print(f"⚠️ Failed to cancel orders during regime close: {e}")
-            save_state({"position": None}, coin)
+            pnl_pct = compute_pnl_pct("LONG" if is_long else "SHORT", entry, current_price)
+            result = close_and_cleanup(
+                coin, is_long, size, reason="CLOSED_BY_REGIME",
+                pnl_pct=pnl_pct,
+                extra_msg=f"Regime {old_regime}→{new_regime}, TP收紧触发平仓"
+            )
             return {"action": "CLOSED_BY_REGIME", "old_regime": old_regime, "new_regime": new_regime,
-                    "old_tp_pct": old_tp_pct, "new_tp_pct": new_tp_pct, "close_price": current_price, "de": de}
-        elif not is_long and current_price <= new_tp_price:
-            print(f"   💰 当前价 ${current_price:,.0f} 已超过新 TP ${new_tp_price:,.0f}，市价平仓")
-            from luckytrader.trade import place_market_order
-            place_market_order(coin, True, size)
-            # 记录交易 + 清理状态
-            pnl_pct = (entry - current_price) / entry * 100
-            record_trade_result(pnl_pct, "SHORT", coin, "REGIME_TP")
-            log_trade("CLOSED_BY_REGIME", coin, "SHORT", size, current_price, None, None,
-                      f"Regime {old_regime}→{new_regime}, TP收紧触发平仓, PnL {pnl_pct:+.2f}%")
-            # 取消所有挂单（SL/TP）
-            try:
-                for o in get_open_orders_detailed(coin):
-                    if o.get("isTrigger"):
-                        cancel_order(coin, o["oid"])
-            except Exception as e:
-                print(f"⚠️ Failed to cancel orders during regime close: {e}")
-            save_state({"position": None}, coin)
-            return {"action": "CLOSED_BY_REGIME", "old_regime": old_regime, "new_regime": new_regime,
-                    "old_tp_pct": old_tp_pct, "new_tp_pct": new_tp_pct, "close_price": current_price, "de": de}
+                    "old_tp_pct": old_tp_pct, "new_tp_pct": new_tp_pct,
+                    "close_price": result["close_price"], "de": de}
     except Exception as e:
         print(f"⚠️ 价格检查/市价平仓失败: {e}")
         return None

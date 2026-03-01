@@ -66,7 +66,8 @@ def compute_de(candles_1d, lookback_days: int = _DEFAULT_LOOKBACK_DAYS):
     try:
         price_now = _to_float(candles_1d[-1]['c'])
         price_past = _to_float(candles_1d[-(lookback_days + 1)]['c'])
-    except (KeyError, TypeError, IndexError):
+    except (KeyError, TypeError, IndexError) as e:
+        logger.warning(f"compute_de: failed to parse candle data: {e}")
         return None
 
     if price_now is None or price_past is None:
@@ -81,7 +82,8 @@ def compute_de(candles_1d, lookback_days: int = _DEFAULT_LOOKBACK_DAYS):
             h = _to_float(candles_1d[i]['h'])
             l = _to_float(candles_1d[i]['l'])
             prev_c = _to_float(candles_1d[i - 1]['c'])
-        except (KeyError, TypeError, IndexError):
+        except (KeyError, TypeError, IndexError) as e:
+            logger.warning(f"compute_de: failed to parse candle {i}: {e}")
             return None
 
         if h is None or l is None or prev_c is None:
@@ -165,7 +167,8 @@ def _to_float(val):
         return None
     try:
         return float(val)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as e:
+        logger.debug(f"_to_float failed for {val!r}: {e}")
         return None
 
 

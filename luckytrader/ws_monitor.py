@@ -130,8 +130,8 @@ class WebSocketManager:
         if self.websocket:
             try:
                 await self.websocket.close()
-            except Exception:
-                pass  # socket 可能已断开，忽略
+            except Exception as e:
+                logger.debug(f"WebSocket close error (already disconnected): {e}")
             finally:
                 self.websocket = None
                 self.connected = False
@@ -560,39 +560,15 @@ class TradeExecutor:
                                         logger.warning(f"❌ Early validation FAILED: MFE {mfe:.3f}% < {ev_mfe_thr}%, closing position")
                                         print(f"❌ 1h方向确认失败: MFE {mfe:.3f}% < {ev_mfe_thr}%, 提前出局")
 
-                                        current_price = execute.get_market_price(coin)
                                         size = abs(pos["size"])
                                         is_long = direction == "LONG"
+                                        pnl_pct = execute.compute_pnl_pct(direction, entry_price, execute.get_market_price(coin))
 
-                                        # 市价平仓
-                                        from luckytrader.trade import place_market_order, cancel_order
-                                        from luckytrader.execute import get_open_orders_detailed
-                                        place_market_order(coin, not is_long, size)
-
-                                        # 计算盈亏
-                                        if is_long:
-                                            pnl_pct = (current_price - entry_price) / entry_price * 100
-                                        else:
-                                            pnl_pct = (entry_price - current_price) / entry_price * 100
-
-                                        # 取消所有挂单
-                                        try:
-                                            for o in get_open_orders_detailed(coin):
-                                                if o.get("isTrigger"):
-                                                    cancel_order(coin, o["oid"])
-                                        except Exception as e:
-                                            logger.error(f"Failed to cancel orders during early exit: {e}")
-
-                                        # 记录 + 通知
-                                        execute.record_trade_result(pnl_pct, direction, coin, "EARLY_EXIT")
-                                        execute.log_trade("EARLY_EXIT", coin, direction, size, current_price, None, None,
-                                                         f"1h方向确认失败 MFE={mfe:.3f}%<{ev_mfe_thr}%, PnL {pnl_pct:+.2f}%")
-                                        execute.save_state({"position": None})
-                                        execute.notify_discord(
-                                            f"❌ **提前出局** {direction} {coin} — 1h方向确认失败\n"
-                                            f"💰 入场: ${entry_price:,.2f} → 平仓: ~${current_price:,.2f}\n"
-                                            f"📊 盈亏: {pnl_pct:+.2f}% | MFE: {mfe:.3f}% < {ev_mfe_thr}%\n"
-                                            f"<@111111111111111111> <@222222222222222222>")
+                                        execute.close_and_cleanup(
+                                            coin, is_long, size, reason="EARLY_EXIT",
+                                            pnl_pct=pnl_pct,
+                                            extra_msg=f"1h方向确认失败 MFE={mfe:.3f}%<{ev_mfe_thr}%"
+                                        )
 
                                         logger.info("Position closed by early validation, stopping trailing monitor")
                                         break
@@ -633,6 +609,7 @@ class TradeExecutor:
                 await asyncio.sleep(self.position_check_interval)
 
             except asyncio.CancelledError:
+                logger.info("Trailing stop task cancelled (shutdown)")
                 break
             except Exception as e:
                 logger.error(f"Trailing stop error: {e}")
