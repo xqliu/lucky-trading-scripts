@@ -56,8 +56,8 @@ class TestBacktestPrintStats:
         assert "胜率0%" in out
 
 
-class TestRunStrategyB:
-    """Edge cases for run_strategy_b."""
+class TestRunBacktest:
+    """Edge cases for run_backtest (uses strategy.detect_signal)."""
 
     def _make_flat_candles(self, n, price=67000, vol=100):
         return [{
@@ -65,23 +65,32 @@ class TestRunStrategyB:
             'c': str(price), 'v': str(vol), 't': 1000000 + i * 1800000,
         } for i in range(n)]
 
+    def _make_flat_4h(self, n, price=67000):
+        return [{
+            'o': str(price), 'h': str(price + 50), 'l': str(price - 50),
+            'c': str(price), 'v': '1000', 't': 1000000 + i * 14400000,
+        } for i in range(n)]
+
     def test_no_signals_flat_market(self):
-        from luckytrader.backtest import run_strategy_b
+        from luckytrader.backtest import run_backtest
         candles = self._make_flat_candles(100)
-        trades = run_strategy_b(candles, 0.04, 0.07, 48)
+        candles_4h = self._make_flat_4h(30)
+        trades = run_backtest(candles, candles_4h, 0.04, 0.07, 48)
         assert trades == []
 
     def test_insufficient_candles(self):
-        from luckytrader.backtest import run_strategy_b
+        from luckytrader.backtest import run_backtest
         candles = self._make_flat_candles(10)
-        trades = run_strategy_b(candles, 0.04, 0.07, 48)
+        candles_4h = self._make_flat_4h(5)
+        trades = run_backtest(candles, candles_4h, 0.04, 0.07, 48)
         assert trades == []
 
-    def test_vol_thresh_parameter(self):
-        from luckytrader.backtest import run_strategy_b
-        candles = self._make_flat_candles(100)
-        # Very high vol_thresh should produce no trades
-        trades = run_strategy_b(candles, 0.04, 0.07, 48, vol_thresh=999)
+    def test_flat_market_no_breakout(self):
+        from luckytrader.backtest import run_backtest
+        candles = self._make_flat_candles(200)
+        candles_4h = self._make_flat_4h(50)
+        # Flat market = no breakout = no trades
+        trades = run_backtest(candles, candles_4h, 0.04, 0.07, 120)
         assert trades == []
 
 
