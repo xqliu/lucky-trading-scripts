@@ -109,7 +109,7 @@ class TestOptimizeSimulateTrade:
         closes = [100, 91, 91, 91]
         result = simulate_trade('LONG', 100, 0, highs, lows, closes, 0.05, 0.10, 10)
         assert result['reason'] == 'STOP'
-        assert result['pnl_pct'] == -5.0
+        assert result['pnl_pct'] == pytest.approx(-5.0 - 8.64/100)
 
     def test_short_take_profit(self):
         from luckytrader.optimize import simulate_trade

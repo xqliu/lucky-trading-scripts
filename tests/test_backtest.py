@@ -3,6 +3,9 @@ Tests for backtest engines — simulation correctness.
 Wrong backtest = wrong parameters = lost money.
 """
 import pytest
+from luckytrader.backtest import FEE_ROUND_TRIP_PCT
+
+FEE_PCT = FEE_ROUND_TRIP_PCT * 100  # ~0.0864%
 
 
 class TestSimulateTrade:
@@ -19,7 +22,7 @@ class TestSimulateTrade:
         
         result = simulate_trade('LONG', entry, 0, highs, lows, closes, 0.04, 0.07, 48)
         assert result['reason'] == 'STOP'
-        assert result['pnl_pct'] == pytest.approx(-4.0)
+        assert result['pnl_pct'] == pytest.approx(-4.0 - FEE_PCT)
     
     def test_long_take_profit(self):
         """LONG hits take profit → fixed positive PnL."""
@@ -32,7 +35,7 @@ class TestSimulateTrade:
         
         result = simulate_trade('LONG', entry, 0, highs, lows, closes, 0.04, 0.07, 48)
         assert result['reason'] == 'TP'
-        assert result['pnl_pct'] == pytest.approx(7.0)
+        assert result['pnl_pct'] == pytest.approx(7.0 - FEE_PCT)
     
     def test_long_timeout(self):
         """LONG held to max_hold → PnL based on close price."""
@@ -47,7 +50,7 @@ class TestSimulateTrade:
         result = simulate_trade('LONG', entry, 0, highs, lows, closes, 0.04, 0.07, 5)
         assert result['reason'] == 'TIMEOUT'
         expected_pnl = (closes[5] - entry) / entry * 100
-        assert result['pnl_pct'] == pytest.approx(expected_pnl)
+        assert result['pnl_pct'] == pytest.approx(expected_pnl - FEE_PCT)
     
     def test_short_stop_loss(self):
         """SHORT hits stop loss → price goes up."""
@@ -60,7 +63,7 @@ class TestSimulateTrade:
         
         result = simulate_trade('SHORT', entry, 0, highs, lows, closes, 0.04, 0.07, 48)
         assert result['reason'] == 'STOP'
-        assert result['pnl_pct'] == pytest.approx(-4.0)
+        assert result['pnl_pct'] == pytest.approx(-4.0 - FEE_PCT)
     
     def test_short_take_profit(self):
         """SHORT hits take profit → price drops."""
@@ -73,7 +76,7 @@ class TestSimulateTrade:
         
         result = simulate_trade('SHORT', entry, 0, highs, lows, closes, 0.04, 0.07, 48)
         assert result['reason'] == 'TP'
-        assert result['pnl_pct'] == pytest.approx(7.0)
+        assert result['pnl_pct'] == pytest.approx(7.0 - FEE_PCT)
     
     def test_stop_checked_before_tp_per_bar(self):
         """If both SL and TP hit in same bar, SL wins (conservative)."""

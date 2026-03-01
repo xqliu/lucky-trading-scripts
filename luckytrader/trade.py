@@ -60,7 +60,7 @@ def get_meta():
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
     return info.meta()
 
-def _retry_on_429(fn, max_retries=3, base_delay=2.0):
+def _retry_on_429(fn, max_retries=3, base_delay=5.0):
     """Retry an API call on 429 rate limit with exponential backoff.
     
     Handles the case where Hyperliquid returns 429 when multiple coins
