@@ -5,6 +5,7 @@ BTC K线图生成器
 输出 PNG 文件路径
 """
 import logging
+from luckytrader.strategy import ema  # 单一真相源：指标只在 strategy.py 定义
 import matplotlib
 matplotlib.use('Agg')  # 无头模式
 import matplotlib.pyplot as plt
@@ -59,12 +60,7 @@ def get_candles_raw(coin='BTC', interval='30m', count=60):
     return info.candles_snapshot(coin, interval, start, end)
 
 
-def ema(data, period):
-    result = [data[0]]
-    k = 2 / (period + 1)
-    for i in range(1, len(data)):
-        result.append(data[i] * k + result[-1] * (1 - k))
-    return result
+
 
 
 def generate_chart(coin='BTC', output_path=None, position=None, signal_result=None):
