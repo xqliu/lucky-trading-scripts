@@ -324,6 +324,46 @@ def fetch_candles(cfg: OKXConfig, max_candles: int = 50000) -> list:
     return unique
 
 
+def load_or_fetch_candles(cfg: OKXConfig, cache_dir: Optional[Path] = None) -> list:
+    """Load candles from local cache, fetch new ones from API, merge and save.
+
+    Cache file: {cache_dir}/eth_30m_candles.json
+    On each run: load cache → fetch only newer candles → merge → save.
+    """
+    import json as _json
+
+    if cache_dir is None:
+        cache_dir = Path(__file__).parent / "data"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"{cfg.coin.lower()}_30m_candles.json"
+
+    cached = []
+    if cache_file.exists():
+        with open(cache_file) as f:
+            cached = _json.load(f)
+        print(f"Cache: {len(cached)} candles "
+              f"({(cached[-1]['ts'] - cached[0]['ts']) / 86400000:.0f} days)")
+
+    # Fetch new candles from API (always, to get latest)
+    fresh = fetch_candles(cfg, max_candles=50000)
+
+    # Merge: deduplicate by timestamp
+    by_ts = {c["ts"]: c for c in cached}
+    for c in fresh:
+        by_ts[c["ts"]] = c  # fresh overwrites cached
+    merged = sorted(by_ts.values(), key=lambda x: x["ts"])
+
+    # Save
+    with open(cache_file, "w") as f:
+        _json.dump(merged, f)
+
+    new_count = len(merged) - len(cached)
+    if new_count > 0:
+        print(f"Added {new_count} new candles, total {len(merged)}")
+
+    return merged
+
+
 def main():
     import os
     # Use config from okx_bb/config/ directory
@@ -333,9 +373,9 @@ def main():
 
     cfg = load_config()
 
-    print(f"Fetching ETH-USDT-SWAP 30m candles...")
-    candles = fetch_candles(cfg)
-    print(f"Loaded {len(candles)} candles "
+    print(f"Loading ETH-USDT-SWAP 30m candles...")
+    candles = load_or_fetch_candles(cfg)
+    print(f"Total: {len(candles)} candles "
           f"({(candles[-1]['ts'] - candles[0]['ts']) / 86400000:.0f} days)")
 
     print(f"\nConfig: BB({cfg.strategy.bb_period}, {cfg.strategy.bb_multiplier}) "
