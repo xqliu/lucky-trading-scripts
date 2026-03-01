@@ -153,7 +153,8 @@ def optimize():
         
         if improvement > 30:
             print(f"\n  ✅ 建议更新参数 (提升>{30}%)")
-            print(f"  新参数: SL={bp['sl']}, TP={bp['tp']}, HOLD={bp['hold']} ({bp['hold']*0.5:.0f}h)")
+            print(f"  建议参数: SL={bp['sl']}, TP={bp['tp']}, HOLD={bp['hold']} ({bp['hold']*0.5:.0f}h)")
+            print(f"  ⚠️  此为建议，不会自动修改生产配置。请人工评估后手动更新 config.toml")
         else:
             print(f"\n  ⏸️ 保持当前参数 (提升不足30%)")
     
@@ -168,20 +169,29 @@ def optimize():
 if __name__ == "__main__":
     result = optimize()
     
-    # 保存结果
-    output = get_workspace_dir() / "memory" / "trading" / "optimization_history.json"
-    output.parent.mkdir(parents=True, exist_ok=True)
+    # 保存到月度建议日志（只记录建议，不修改生产配置）
+    suggestions_dir = get_workspace_dir() / "memory" / "trading" / "optimization_suggestions"
+    suggestions_dir.mkdir(parents=True, exist_ok=True)
+    
+    month_str = datetime.now(timezone.utc).strftime("%Y-%m")
+    suggestion_file = suggestions_dir / f"{month_str}.json"
+    
+    # 追加到当月文件
     history = []
-    if output.exists():
+    if suggestion_file.exists():
         try:
-            history = json.loads(output.read_text())
-        except:
+            history = json.loads(suggestion_file.read_text())
+        except Exception as e:
+            print(f"⚠️ 读取历史建议失败: {e}")
             history = []
     
     history.append({
         "date": datetime.now(timezone.utc).isoformat(),
+        "status": "SUGGESTION_ONLY",
+        "note": "此为优化建议，未自动应用。需人工评估 + canonical backtest 验证后手动更新 config.toml",
         "result": result,
     })
     
-    output.write_text(json.dumps(history, indent=2, default=str))
-    print(f"\n结果已保存到 {output}")
+    suggestion_file.write_text(json.dumps(history, indent=2, default=str))
+    print(f"\n建议已保存到 {suggestion_file}")
+    print(f"⚠️  注意：此为建议，不会自动修改生产配置 config.toml")

@@ -77,22 +77,22 @@ class TestPlaceMarketOrderSignature:
 class TestEarlyValidation:
     """验证 ws_monitor 中 early validation 的平仓调用正确"""
 
-    def test_early_exit_calls_place_market_order_correctly(self):
-        """模拟 early validation 失败 → 平仓调用参数正确"""
-        # Parse ws_monitor.py and find the place_market_order call in early validation
+    def test_early_exit_uses_close_and_cleanup(self):
+        """Early validation 失败 → 使用统一的 close_and_cleanup() 平仓"""
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         ws_path = os.path.join(base, 'luckytrader', 'ws_monitor.py')
         content = open(ws_path).read()
         
-        # Find the early validation section
-        assert 'place_market_order(coin, not is_long, size)' in content, \
-            "Early validation should call place_market_order(coin, not is_long, size)"
+        # Should use close_and_cleanup (unified close function)
+        assert 'close_and_cleanup(' in content, \
+            "Early validation should use close_and_cleanup() for closing"
         
-        # Ensure old buggy call is NOT present
+        # Should NOT have raw place_market_order calls in early validation section
+        # (only close_and_cleanup should handle the close logic)
         assert 'place_market_order(coin, size, is_buy=' not in content, \
             "Old buggy call pattern still exists!"
-        assert 'reduce_only=True' not in content.split('place_market_order')[1][:100] if 'place_market_order' in content else True, \
-            "reduce_only parameter should not be passed to place_market_order"
+        assert 'reduce_only=True' not in content, \
+            "reduce_only parameter should not appear in ws_monitor"
 
 
 # ─── Test 3: Regime TP/SL 覆盖验证 ───
