@@ -386,7 +386,7 @@ class WSMonitor:
                 triggerPxType="last")
             if result.get("code") == "0" and result.get("data"):
                 self._pending_long_algoId = result["data"][0].get("algoId", "")
-                logger.info(f"📈 LONG trigger at {upper:.2f} ({self._pending_long_algoId})")
+                logger.info(f"📈 LONG trigger at ${upper:.2f} sz={sz} orderPx=${upper*1.001:.2f} algoId={self._pending_long_algoId}")
             else:
                 logger.error(f"LONG trigger failed: {result}")
 
@@ -398,7 +398,7 @@ class WSMonitor:
                 triggerPxType="last")
             if result.get("code") == "0" and result.get("data"):
                 self._pending_short_algoId = result["data"][0].get("algoId", "")
-                logger.info(f"📉 SHORT trigger at {lower:.2f} ({self._pending_short_algoId})")
+                logger.info(f"📉 SHORT trigger at ${lower:.2f} sz={sz} orderPx=${lower*0.999:.2f} algoId={self._pending_short_algoId}")
             else:
                 logger.error(f"SHORT trigger failed: {result}")
 
@@ -510,6 +510,7 @@ class WSMonitor:
             return
 
         sl_algo_id = sl_result["data"][0].get("algoId", "")
+        logger.info(f"✅ SL placed: algoId={sl_algo_id} triggerPx=${sl_price:.2f} side={close_side} sz={actual_sz}")
 
         # Verify SL is actually live on exchange
         await asyncio.sleep(1)
@@ -530,6 +531,7 @@ class WSMonitor:
         tp_ord_id = ""
         if tp_result.get("code") == "0" and tp_result.get("data"):
             tp_ord_id = tp_result["data"][0].get("ordId", "")
+            logger.info(f"✅ TP placed: ordId={tp_ord_id} px=${tp_price:.2f} side={close_side} sz={actual_sz}")
         else:
             logger.error(f"TP failed (SL active): {tp_result}")
             send_discord(f"{MSG_PREFIX}⚠️ TP设置失败，仅有SL保护")
