@@ -25,6 +25,9 @@ CURRENT = {
     "vol_thresh": _cfg.strategy.vol_threshold,
 }
 
+# 交易成本
+FEE_ROUND_TRIP_PCT = 8.64 / 10000  # 0.000864
+
 def simulate_trade(direction, entry, entry_idx, highs, lows, closes, stop_pct, tp_pct, max_hold):
     if direction == 'LONG':
         stop = entry * (1 - stop_pct)
@@ -37,21 +40,21 @@ def simulate_trade(direction, entry, entry_idx, highs, lows, closes, stop_pct, t
         idx = entry_idx + j
         if direction == 'LONG':
             if lows[idx] <= stop:
-                return {'pnl_pct': -stop_pct * 100, 'reason': 'STOP'}
+                return {'pnl_pct': -stop_pct * 100 - FEE_ROUND_TRIP_PCT * 100, 'reason': 'STOP'}
             if highs[idx] >= tp:
-                return {'pnl_pct': tp_pct * 100, 'reason': 'TP'}
+                return {'pnl_pct': tp_pct * 100 - FEE_ROUND_TRIP_PCT * 100, 'reason': 'TP'}
         else:
             if highs[idx] >= stop:
-                return {'pnl_pct': -stop_pct * 100, 'reason': 'STOP'}
+                return {'pnl_pct': -stop_pct * 100 - FEE_ROUND_TRIP_PCT * 100, 'reason': 'STOP'}
             if lows[idx] <= tp:
-                return {'pnl_pct': tp_pct * 100, 'reason': 'TP'}
+                return {'pnl_pct': tp_pct * 100 - FEE_ROUND_TRIP_PCT * 100, 'reason': 'TP'}
     
     exit_idx = min(entry_idx + max_hold, len(closes) - 1)
     if direction == 'LONG':
         pnl = (closes[exit_idx] - entry) / entry * 100
     else:
         pnl = (entry - closes[exit_idx]) / entry * 100
-    return {'pnl_pct': pnl, 'reason': 'TIMEOUT'}
+    return {'pnl_pct': pnl - FEE_ROUND_TRIP_PCT * 100, 'reason': 'TIMEOUT'}
 
 def run_backtest(candles, sl, tp, hold, vol_thresh=1.25):
     closes = [float(c['c']) for c in candles]

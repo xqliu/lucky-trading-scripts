@@ -7,6 +7,10 @@ from luckytrader.strategy import detect_signal
 from luckytrader.signal import get_candles
 from luckytrader.config import get_config
 
+# 交易成本 (Hyperliquid taker)
+FEE_ROUND_TRIP_BPS = 8.64  # 4.32 bps/side × 2
+FEE_ROUND_TRIP_PCT = FEE_ROUND_TRIP_BPS / 10000  # 0.000864
+
 
 def simulate_trade(direction, entry, entry_idx, highs, lows, closes, stop_pct, tp_pct, max_hold):
     if direction == 'LONG':
@@ -16,25 +20,27 @@ def simulate_trade(direction, entry, entry_idx, highs, lows, closes, stop_pct, t
         stop = entry * (1 + stop_pct)
         tp = entry * (1 - tp_pct)
 
+    fee = FEE_ROUND_TRIP_PCT * 100  # 转为百分比单位
+
     for j in range(1, min(max_hold + 1, len(closes) - entry_idx)):
         idx = entry_idx + j
         if direction == 'LONG':
             if lows[idx] <= stop:
-                return {'dir': direction, 'pnl_pct': -stop_pct * 100, 'bars': j, 'reason': 'STOP'}
+                return {'dir': direction, 'pnl_pct': -stop_pct * 100 - fee, 'bars': j, 'reason': 'STOP'}
             if highs[idx] >= tp:
-                return {'dir': direction, 'pnl_pct': tp_pct * 100, 'bars': j, 'reason': 'TP'}
+                return {'dir': direction, 'pnl_pct': tp_pct * 100 - fee, 'bars': j, 'reason': 'TP'}
         else:
             if highs[idx] >= stop:
-                return {'dir': direction, 'pnl_pct': -stop_pct * 100, 'bars': j, 'reason': 'STOP'}
+                return {'dir': direction, 'pnl_pct': -stop_pct * 100 - fee, 'bars': j, 'reason': 'STOP'}
             if lows[idx] <= tp:
-                return {'dir': direction, 'pnl_pct': tp_pct * 100, 'bars': j, 'reason': 'TP'}
+                return {'dir': direction, 'pnl_pct': tp_pct * 100 - fee, 'bars': j, 'reason': 'TP'}
 
     exit_idx = min(entry_idx + max_hold, len(closes) - 1)
     if direction == 'LONG':
         pnl = (closes[exit_idx] - entry) / entry * 100
     else:
         pnl = (entry - closes[exit_idx]) / entry * 100
-    return {'dir': direction, 'pnl_pct': pnl, 'bars': exit_idx - entry_idx, 'reason': 'TIMEOUT'}
+    return {'dir': direction, 'pnl_pct': pnl - FEE_ROUND_TRIP_PCT * 100, 'bars': exit_idx - entry_idx, 'reason': 'TIMEOUT'}
 
 
 def run_backtest(candles_30m, candles_4h, stop_pct, tp_pct, max_hold,
@@ -61,7 +67,12 @@ def run_backtest(candles_30m, candles_4h, stop_pct, tp_pct, max_hold,
     trades = []
     in_trade_until = 0  # 单仓制：持仓期间不开新仓
 
-    for i in range(1, len(candles_30m) - 1):
+    # detect_signal 内部需要 range_bars+2 个前置 bar，跳过无用循环
+    range_bars = cfg.strategy.range_bars if hasattr(cfg, 'strategy') else 48
+    lookback_bars = cfg.strategy.lookback_bars if hasattr(cfg, 'strategy') else 48
+    start = max(range_bars, lookback_bars) + 2
+
+    for i in range(start, len(candles_30m) - 1):
         if i <= in_trade_until:
             continue
 

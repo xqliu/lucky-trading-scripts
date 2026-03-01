@@ -94,6 +94,25 @@ class TestEmergencyCloseRetry:
             execute_signal._WORKSPACE_DIR = orig_workspace
             mock_hl.place_market_order.side_effect = None
     
+    @patch('luckytrader.execute.notify_discord')
+    def test_position_check_all_fail_aborts(self, mock_notify, mock_hl):
+        """If position check fails 3 times (API down), abort retry to prevent reverse open."""
+        from luckytrader.execute import emergency_close
+
+        mock_hl.place_market_order.side_effect = [
+            Exception("timeout"),   # attempt 1 fails
+            {"status": "ok"},       # attempt 2 would succeed but never called
+        ]
+
+        # get_position always throws (API completely down)
+        with patch('luckytrader.execute.get_position', side_effect=Exception("429")):
+            with pytest.raises(RuntimeError, match="紧急平仓失败"):
+                emergency_close("BTC", 0.001, True, max_retries=2)
+
+        # Only 1 market order attempt — the retry was aborted because position check failed
+        assert mock_hl.place_market_order.call_count == 1
+        mock_hl.place_market_order.side_effect = None
+
     @patch('luckytrader.execute.log_trade')
     @patch('luckytrader.execute.notify_discord')
     def test_error_status_triggers_retry(self, mock_notify, mock_log, mock_hl):
