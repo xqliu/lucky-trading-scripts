@@ -289,3 +289,93 @@ class TestRegimeTightenOnly:
         cfg = get_config()
         result = should_tighten_tp(0.07, None, cfg)
         assert result is None
+
+
+# ─── Test 8: Single Source of Truth for indicators ───
+class TestNoIndicatorDuplication:
+    """
+    铁律：指标计算（EMA、BB、RSI 等）只能在 strategy.py 定义一次。
+    其他文件（backtest、signal、execute）必须 import，不准重复实现。
+    违反这条 = 回测和实盘逻辑分裂，是最严重的结构性 bug。
+    """
+
+    INDICATOR_FUNCTIONS = ['ema', 'rsi', 'bollinger', 'detect_signal',
+                           'get_trend_4h', 'get_range_levels', 'get_vol_ratio',
+                           'should_tighten_tp']
+
+    def test_no_indicator_redefinition_in_non_strategy_files(self):
+        """确保指标函数只在 strategy.py 中定义，其他文件不得重新定义"""
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        pkg_dir = os.path.join(base, 'luckytrader')
+
+        violations = []
+        for fname in os.listdir(pkg_dir):
+            if not fname.endswith('.py') or fname == 'strategy.py':
+                continue
+            path = os.path.join(pkg_dir, fname)
+            try:
+                tree = ast.parse(open(path).read())
+            except:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and node.name in self.INDICATOR_FUNCTIONS:
+                    violations.append(f"{fname}:{node.lineno} redefines '{node.name}'")
+
+        assert not violations, (
+            "Indicator functions must only be defined in strategy.py. "
+            "Other files must `from luckytrader.strategy import ...`.\n"
+            "Violations:\n" + "\n".join(violations)
+        )
+
+    def test_backtest_imports_detect_signal_from_strategy(self):
+        """回测必须使用 strategy.detect_signal()，不准自己算信号"""
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        backtest_path = os.path.join(base, 'luckytrader', 'backtest.py')
+        if not os.path.exists(backtest_path):
+            return  # no backtest file yet
+
+        source = open(backtest_path).read()
+        # Must import detect_signal from strategy (or from signal which re-exports it)
+        has_import = ('from luckytrader.strategy import' in source and 'detect_signal' in source) or \
+                     ('from luckytrader.signal import' in source and 'detect_signal' in source) or \
+                     ('from .strategy import' in source and 'detect_signal' in source) or \
+                     ('from .signal import' in source and 'detect_signal' in source)
+        assert has_import, (
+            "backtest.py must import detect_signal from strategy.py or signal.py, "
+            "not reimplement signal logic"
+        )
+
+    def test_signal_imports_from_strategy(self):
+        """signal.py 的指标必须来自 strategy.py"""
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        signal_path = os.path.join(base, 'luckytrader', 'signal.py')
+        source = open(signal_path).read()
+
+        assert 'from luckytrader.strategy import' in source or \
+               'from .strategy import' in source, \
+            "signal.py must import indicators from strategy.py"
+
+
+# ─── Test 9: Chain-first safety ───
+class TestChainFirstSafety:
+    """
+    铁律：任何改变仓位的重试逻辑，每次重试前必须查链上状态。
+    防止 emergency_close 重复执行导致反向开仓。
+    """
+
+    def test_emergency_close_checks_position_before_retry(self):
+        """emergency_close 必须在重试前调用 get_position"""
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        source = open(os.path.join(base, 'luckytrader', 'execute.py')).read()
+
+        # Find emergency_close function body
+        import re
+        match = re.search(r'def emergency_close\(.*?\n(.*?)(?=\ndef |\Z)',
+                          source, re.DOTALL)
+        assert match, "emergency_close function not found"
+        body = match.group(1)
+
+        assert 'get_position' in body, (
+            "emergency_close() must call get_position() to verify chain state "
+            "before each retry. This prevents accidental reverse positions."
+        )
