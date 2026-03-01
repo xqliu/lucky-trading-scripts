@@ -20,6 +20,7 @@ if _parent not in sys.path:
 from core.types import Direction, Signal, Position, ExitReason, TradeResult
 from core.state import load_state, save_state
 from core.notify import send_discord
+MSG_PREFIX = "[OKX测试] "
 from okx_bb.config import load_config, OKXConfig
 from okx_bb.exchange import OKXClient
 from okx_bb.strategy import detect_signal
@@ -172,12 +173,12 @@ class BBExecutor:
 
         if result.get("code") != "0":
             logger.error(f"Market order failed: {result}")
-            send_discord(f"❌ OKX BB: 开仓失败\n{result.get('msg', 'unknown')}")
+            send_discord(f"{MSG_PREFIX}❌ OKX BB: 开仓失败\n{result.get('msg', 'unknown')}")
             return False
 
         if not result.get("data") or not result["data"]:
             logger.error(f"Market order returned empty data: {result}")
-            send_discord(f"❌ OKX BB: 开仓返回空数据\n{result}")
+            send_discord(f"{MSG_PREFIX}❌ OKX BB: 开仓返回空数据\n{result}")
             return False
 
         ordId = result["data"][0].get("ordId", "")
@@ -203,7 +204,7 @@ class BBExecutor:
             # CRITICAL: Cannot calculate SL/TP with price=0
             logger.error("CRITICAL: entry_price=0, cannot set SL/TP. Emergency close!")
             self._emergency_close(close_side, sz)
-            send_discord("🚨 OKX BB: 无法获取入场价格，紧急平仓", mention=True)
+            send_discord(f"{MSG_PREFIX}🚨 OKX BB: 无法获取入场价格，紧急平仓", mention=True)
             return False
 
         # Calculate SL/TP prices
@@ -224,7 +225,7 @@ class BBExecutor:
             logger.error(f"SL order failed: {sl_result}")
             logger.error("EMERGENCY: SL failed, closing position immediately")
             self._emergency_close(close_side, sz)
-            send_discord(f"🚨 OKX BB: 止损设置失败，紧急平仓\n{sl_result.get('msg')}")
+            send_discord(f"{MSG_PREFIX}🚨 OKX BB: 止损设置失败，紧急平仓\n{sl_result.get('msg')}")
             return False
 
         sl_algo_id = sl_result["data"][0].get("algoId", "") if sl_result["data"] else ""
@@ -239,7 +240,7 @@ class BBExecutor:
         if tp_result.get("code") != "0" or not tp_result.get("data"):
             logger.error(f"TP order failed: {tp_result}")
             # TP failure is less critical — warn but keep position with SL
-            send_discord(f"⚠️ OKX BB: TP设置失败，仅有SL保护\n{tp_result.get('msg')}")
+            send_discord(f"{MSG_PREFIX}⚠️ OKX BB: TP设置失败，仅有SL保护\n{tp_result.get('msg')}")
             tp_ord_id = ""
         else:
             tp_ord_id = tp_result["data"][0].get("ordId", "") if tp_result["data"] else ""
@@ -261,7 +262,7 @@ class BBExecutor:
 
         # Notify
         send_discord(
-            f"📊 OKX BB: {direction} {self.cfg.coin}\n"
+            f"{MSG_PREFIX}📊 OKX BB: {direction} {self.cfg.coin}\n"
             f"入场: ${entry_price:.2f}\n"
             f"止损: ${sl_price:.2f} ({self.cfg.risk.stop_loss_pct*100:.1f}%)\n"
             f"止盈: ${tp_price:.2f} ({self.cfg.risk.take_profit_pct*100:.1f}%)\n"
@@ -305,7 +306,7 @@ class BBExecutor:
             time.sleep(3)
 
         logger.error("CRITICAL: Emergency close failed after 3 attempts!")
-        send_discord("🚨🚨 OKX BB: 紧急平仓失败！需要手动干预！", mention=True)
+        send_discord(f"{MSG_PREFIX}🚨🚨 OKX BB: 紧急平仓失败！需要手动干预！", mention=True)
         return False
 
     # === Position Monitoring ===
@@ -370,7 +371,7 @@ class BBExecutor:
             result = self._record_closed_position(pos, "timeout")
 
             send_discord(
-                f"⏰ OKX BB: {self.cfg.coin} 持仓超时平仓\n"
+                f"{MSG_PREFIX}⏰ OKX BB: {self.cfg.coin} 持仓超时平仓\n"
                 f"方向: {pos['direction']}\n"
                 f"持仓时间: {elapsed/3600:.1f}h",
                 mention=True,
