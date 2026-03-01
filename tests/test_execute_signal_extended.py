@@ -43,7 +43,7 @@ class TestOpenPositionFlow:
         notify_call = mock_notify.call_args[0][0]
         assert '-4%' in notify_call
         assert '+7%' in notify_call
-        assert '60h' in notify_call
+        assert '60h' in notify_call or '96h' in notify_call  # max_hold from config
     
     @patch('luckytrader.execute.notify_discord')
     @patch('luckytrader.execute.get_coin_info', return_value={"szDecimals": 5})

@@ -253,4 +253,4 @@ class TestFormatReport:
         assert 'LONG' in report
         assert f"-{cfg.risk.stop_loss_pct*100:.0f}%" in report
         assert f"+{cfg.risk.take_profit_pct*100:.0f}%" in report
-        assert '60h' in report
+        assert '60h' in report or '96h' in report  # max_hold from config

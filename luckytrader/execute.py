@@ -864,7 +864,7 @@ def reeval_regime_tp(position):
         if is_long and current_price >= new_tp_price:
             print(f"   💰 当前价 ${current_price:,.0f} 已超过新 TP ${new_tp_price:,.0f}，市价平仓")
             from luckytrader.trade import place_market_order
-            place_market_order(coin, size, is_buy=False, reduce_only=True)
+            place_market_order(coin, False, size)
             # 记录交易 + 清理状态
             pnl_pct = (current_price - entry) / entry * 100
             record_trade_result(pnl_pct, "LONG", coin, "REGIME_TP")
@@ -883,7 +883,7 @@ def reeval_regime_tp(position):
         elif not is_long and current_price <= new_tp_price:
             print(f"   💰 当前价 ${current_price:,.0f} 已超过新 TP ${new_tp_price:,.0f}，市价平仓")
             from luckytrader.trade import place_market_order
-            place_market_order(coin, size, is_buy=True, reduce_only=True)
+            place_market_order(coin, True, size)
             # 记录交易 + 清理状态
             pnl_pct = (entry - current_price) / entry * 100
             record_trade_result(pnl_pct, "SHORT", coin, "REGIME_TP")
