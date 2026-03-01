@@ -206,15 +206,16 @@ def report(name: str, trades: List[Trade], candles: list):
         print(f"  {name}: 0 trades")
         return
 
-    total_pnl = sum(t.pnl for t in trades)
     wins = [t for t in trades if t.pnl > 0]
     losses = [t for t in trades if t.pnl <= 0]
     win_rate = len(wins) / len(trades) * 100
 
-    # Equity curve for MDD
+    # Equity curve (compounded) for return and MDD
     equity = [1.0]
     for t in trades:
         equity.append(equity[-1] * (1 + t.pnl))
+    compounded_return = equity[-1] - 1  # This is the REAL return
+
     peak = equity[0]
     max_dd = 0
     for e in equity:
@@ -229,13 +230,15 @@ def report(name: str, trades: List[Trade], candles: list):
     gross_loss = abs(sum(t.pnl for t in losses)) if losses else 0.001
     pf = gross_win / gross_loss
 
-    # Walk-forward (4 segments)
+    # Walk-forward (4 segments) — use compounded equity per segment
     seg_size = len(trades) // 4
     wf_pass = 0
     for i in range(4):
         seg = trades[i * seg_size:(i + 1) * seg_size] if i < 3 else trades[i * seg_size:]
-        seg_pnl = sum(t.pnl for t in seg)
-        if seg_pnl > 0:
+        seg_eq = 1.0
+        for t in seg:
+            seg_eq *= (1 + t.pnl)
+        if seg_eq > 1.0:
             wf_pass += 1
 
     # Exit breakdown
@@ -250,8 +253,8 @@ def report(name: str, trades: List[Trade], candles: list):
     print(f"  {name}")
     print(f"{'='*60}")
     print(f"  Period: {days:.0f} days | Trades: {len(trades)}")
-    print(f"  Total PnL: {total_pnl*100:+.1f}%")
-    print(f"  Final equity: ${100 * equity[-1]:.2f} (from $100)")
+    print(f"  Return: {compounded_return*100:+.1f}% (compounded)")
+    print(f"  $100 → ${100 * equity[-1]:.2f}")
     print(f"  Win rate: {win_rate:.1f}% | PF: {pf:.2f}")
     print(f"  Max DD: {max_dd*100:.1f}%")
     print(f"  WF: {wf_pass}/4")
@@ -261,7 +264,8 @@ def report(name: str, trades: List[Trade], candles: list):
     print(f"{'='*60}")
 
     return {
-        "name": name, "trades": len(trades), "total_pnl": total_pnl,
+        "name": name, "trades": len(trades),
+        "return_pct": compounded_return,
         "win_rate": win_rate, "pf": pf, "mdd": max_dd,
         "wf": wf_pass, "final_equity": 100 * equity[-1],
     }
@@ -392,7 +396,7 @@ def main():
     r2 = report("INTRABAR (ws_monitor trigger)", intrabar_trades, candles)
 
     if r1 and r2:
-        print(f"\nIntrabar advantage: {(r2['total_pnl'] - r1['total_pnl'])*100:+.1f}% "
+        print(f"\nIntrabar vs Close: ${r2['final_equity']:.0f} vs ${r1['final_equity']:.0f} "
               f"({r2['trades'] - r1['trades']:+d} trades)")
 
 
