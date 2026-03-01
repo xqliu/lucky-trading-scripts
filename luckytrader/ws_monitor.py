@@ -528,9 +528,14 @@ class TradeExecutor:
                 # ─── 1小时方向确认（早期验证）───
                 if not self._early_validation_done:
                     try:
-                        state = await asyncio.to_thread(execute.load_state)
-                        pos = state.get("position")
-                        if pos and pos.get("entry_time"):
+                        # 遍历所有币种检查 early validation
+                        for ev_coin in execute.TRADING_COINS:
+                            if self._early_validation_done:
+                                break
+                            coin_state = await asyncio.to_thread(execute.load_state, ev_coin)
+                            pos = coin_state.get("position") if coin_state else None
+                            if not (pos and pos.get("entry_time")):
+                                continue
                             from datetime import datetime, timezone
                             entry_time = datetime.fromisoformat(pos["entry_time"])
                             elapsed_min = (datetime.now(timezone.utc) - entry_time).total_seconds() / 60
