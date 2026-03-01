@@ -118,7 +118,7 @@ def cancel_order(coin: str, oid: int):
     """Cancel an order"""
     account = Account.from_key(API_PRIVATE_KEY)
     exchange = Exchange(account, constants.MAINNET_API_URL, account_address=MAIN_WALLET)
-    return exchange.cancel(coin, oid)
+    return _retry_on_429(lambda: exchange.cancel(coin, oid))
 
 def place_stop_loss(coin: str, size: float, trigger_price: float, is_long: bool = True):
     """Place a stop loss order (trigger order)
