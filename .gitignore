@@ -30,3 +30,7 @@ state/
 .DS_Store
 .vscode/
 .idea/
+
+# OKX secrets
+okx_bb/config/.okx_config
+okx_bb/state/*.json
