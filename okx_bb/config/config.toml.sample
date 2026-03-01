@@ -1,0 +1,26 @@
+# OKX BB Breakout System — Config Template
+# Copy to config.toml and fill in your parameters
+
+[strategy]
+bb_period = 20
+bb_multiplier = 2.0
+trend_ema_period = 96
+trend_lookback = 8
+
+[risk]
+take_profit_pct = 0.03
+stop_loss_pct = 0.02
+max_hold_bars = 120
+position_ratio = 1.00
+max_single_loss = 10.0
+
+[fees]
+taker_fee = 0.0005
+maker_fee = 0.0002
+
+[exchange]
+coin = "ETH"
+instId = "ETH-USDT-SWAP"
+
+[notifications]
+discord_channel_id = ""
