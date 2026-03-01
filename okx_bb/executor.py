@@ -521,8 +521,8 @@ class BBExecutor:
         if log_path.exists():
             try:
                 log = json.loads(log_path.read_text())
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Corrupt trade log, starting fresh: {e}")
 
         log.append({
             "coin": result.coin,

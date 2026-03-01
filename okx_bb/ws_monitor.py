@@ -314,16 +314,16 @@ class WSMonitor:
                 try:
                     await self._rest_exchange("cancel_algo_order",
                         self._pending_long_algoId, self.cfg.instId)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Cancel LONG trigger {self._pending_long_algoId}: {e}")
                 self._pending_long_algoId = None
 
             if self._pending_short_algoId:
                 try:
                     await self._rest_exchange("cancel_algo_order",
                         self._pending_short_algoId, self.cfg.instId)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Cancel SHORT trigger {self._pending_short_algoId}: {e}")
                 self._pending_short_algoId = None
 
             self._save_pending()
@@ -474,15 +474,15 @@ class WSMonitor:
                 try:
                     await self._rest_exchange("cancel_algo_order",
                         self._pending_short_algoId, self.cfg.instId)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Cancel opposite SHORT trigger failed: {e}")
                 self._pending_short_algoId = None
             elif direction == "SHORT" and self._pending_long_algoId:
                 try:
                     await self._rest_exchange("cancel_algo_order",
                         self._pending_long_algoId, self.cfg.instId)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Cancel opposite LONG trigger failed: {e}")
                 self._pending_long_algoId = None
             self._save_pending()
 
@@ -772,8 +772,8 @@ class WSMonitor:
                             for o in (open_orders or []):
                                 try:
                                     await self._rest_exchange("cancel_order", self.cfg.instId, o["ordId"])
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.warning(f"Cancel stale order {o['ordId']}: {e}")
                             self._triggered_direction = None
                             self._triggered_sz = None
                             self._triggered_at = None
