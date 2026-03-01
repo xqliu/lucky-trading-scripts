@@ -20,7 +20,7 @@ if _parent not in sys.path:
 from core.types import Direction, Signal, Position, ExitReason, TradeResult
 from core.state import load_state, save_state
 from core.notify import send_discord
-MSG_PREFIX = "[OKX测试] "
+MSG_PREFIX = ""
 from okx_bb.config import load_config, OKXConfig
 from okx_bb.exchange import OKXClient
 from okx_bb.strategy import detect_signal

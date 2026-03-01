@@ -58,7 +58,7 @@ MAX_RECONNECT_DELAY = 120
 PENDING_STATE_FILE = STATE_DIR / "pending_orders.json"
 
 # Prefix for all Discord messages (remove when system proven stable)
-MSG_PREFIX = "[OKX测试] "
+MSG_PREFIX = ""
 
 
 class CandleAccumulator:
