@@ -1,0 +1,19 @@
+[Unit]
+Description=OKX BB Breakout WebSocket Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xqianliu
+WorkingDirectory=/home/xqianliu/.openclaw/workspace/trading
+Environment=PYTHONUNBUFFERED=1
+Environment=OKX_BB_CONFIG_DIR=/home/xqianliu/.openclaw/workspace/trading/okx_bb/config
+ExecStart=/home/xqianliu/.openclaw/workspace/trading/bb-trading-system/.venv/bin/python -m okx_bb.ws_monitor
+ExecStop=/home/xqianliu/.openclaw/workspace/trading/bb-trading-system/.venv/bin/python /home/xqianliu/.openclaw/workspace/trading/okx_bb/cleanup.py
+TimeoutStopSec=10
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
