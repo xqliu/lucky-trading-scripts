@@ -235,7 +235,7 @@ class BBExecutor:
             logger.error(f"SL order failed: {sl_result}")
             logger.error("EMERGENCY: SL failed, closing position immediately")
             self._emergency_close(close_side, sz)
-            send_discord(f"{MSG_PREFIX}🚨 OKX BB: 止损设置失败，紧急平仓\n{sl_result.get('msg')}")
+            send_discord(f"{MSG_PREFIX}🚨 OKX BB: 止损设置失败，紧急平仓\n{sl_result.get('msg')}", mention=True)
             return False
 
         sl_algo_id = sl_result["data"][0].get("algoId", "") if sl_result["data"] else ""
