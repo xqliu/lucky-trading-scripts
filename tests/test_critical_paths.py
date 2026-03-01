@@ -299,18 +299,20 @@ class TestNoIndicatorDuplication:
     违反这条 = 回测和实盘逻辑分裂，是最严重的结构性 bug。
     """
 
-    INDICATOR_FUNCTIONS = ['ema', 'rsi', 'bollinger', 'detect_signal',
-                           'get_trend_4h', 'get_range_levels', 'get_vol_ratio',
-                           'should_tighten_tp']
+    # Generic math indicators — must only be defined in indicators.py
+    GENERIC_INDICATORS = ['ema', 'rsi', 'bollinger']
+    # Strategy-specific functions — must only be defined in strategy.py
+    STRATEGY_FUNCTIONS = ['detect_signal', 'get_trend_4h', 'get_range_levels',
+                          'get_vol_ratio', 'should_tighten_tp']
 
     def test_no_indicator_redefinition_in_non_strategy_files(self):
-        """确保指标函数只在 strategy.py 中定义，其他文件不得重新定义"""
+        """确保通用指标只在 indicators.py 定义，策略函数只在 strategy.py 定义"""
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         pkg_dir = os.path.join(base, 'luckytrader')
 
         violations = []
         for fname in os.listdir(pkg_dir):
-            if not fname.endswith('.py') or fname == 'strategy.py':
+            if not fname.endswith('.py'):
                 continue
             path = os.path.join(pkg_dir, fname)
             try:
@@ -318,8 +320,11 @@ class TestNoIndicatorDuplication:
             except:
                 continue
             for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef) and node.name in self.INDICATOR_FUNCTIONS:
-                    violations.append(f"{fname}:{node.lineno} redefines '{node.name}'")
+                if isinstance(node, ast.FunctionDef):
+                    if node.name in self.GENERIC_INDICATORS and fname != 'indicators.py':
+                        violations.append(f"{fname}:{node.lineno} redefines generic indicator '{node.name}' (must be in indicators.py)")
+                    elif node.name in self.STRATEGY_FUNCTIONS and fname != 'strategy.py':
+                        violations.append(f"{fname}:{node.lineno} redefines strategy function '{node.name}' (must be in strategy.py)")
 
         assert not violations, (
             "Indicator functions must only be defined in strategy.py. "

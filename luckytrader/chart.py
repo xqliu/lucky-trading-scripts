@@ -5,7 +5,7 @@ BTC K线图生成器
 输出 PNG 文件路径
 """
 import logging
-from luckytrader.strategy import ema  # 单一真相源：指标只在 strategy.py 定义
+from luckytrader.indicators import ema  # 通用指标从 indicators.py 导入
 import matplotlib
 matplotlib.use('Agg')  # 无头模式
 import matplotlib.pyplot as plt

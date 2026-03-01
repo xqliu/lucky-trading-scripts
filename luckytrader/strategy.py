@@ -14,39 +14,7 @@ Strategy Module — 策略核心逻辑（纯计算，零 IO）
 """
 from typing import Optional, Tuple, Dict, List
 from luckytrader.regime import compute_de, get_regime_params
-
-
-# ─── 技术指标（纯计算）───────────────────────────────────
-
-def ema(data: List[float], period: int) -> List[float]:
-    """Exponential Moving Average"""
-    if not data:
-        return []
-    result = [data[0]]
-    k = 2 / (period + 1)
-    for i in range(1, len(data)):
-        result.append(data[i] * k + result[-1] * (1 - k))
-    return result
-
-
-def rsi(data: List[float], period: int = 14) -> List[float]:
-    """Relative Strength Index"""
-    result = [50] * min(period, len(data))
-    for i in range(period, len(data)):
-        gains, losses = [], []
-        for j in range(i - period + 1, i + 1):
-            change = data[j] - data[j - 1]
-            if change > 0:
-                gains.append(change)
-            elif change < 0:
-                losses.append(abs(change))
-        avg_gain = sum(gains) / period if gains else 0
-        avg_loss = sum(losses) / period if losses else 0.0001
-        if avg_loss == 0:
-            avg_loss = 0.0001
-        rs = avg_gain / avg_loss
-        result.append(100 - 100 / (1 + rs))
-    return result
+from luckytrader.indicators import ema, rsi  # 通用指标从 indicators.py 导入
 
 
 # ─── 信号检测 ───────────────────────────────────────────

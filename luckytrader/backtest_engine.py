@@ -24,7 +24,8 @@ from typing import Optional, Dict, List, Tuple
 
 from hyperliquid.info import Info
 from luckytrader.regime import compute_de, get_regime_params
-from luckytrader.strategy import ema, rsi, detect_signal, should_tighten_tp, check_exit, compute_tp_price
+from luckytrader.indicators import ema, rsi
+from luckytrader.strategy import detect_signal, should_tighten_tp, check_exit, compute_tp_price
 from luckytrader.config import get_config
 
 
