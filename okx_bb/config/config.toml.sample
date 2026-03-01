@@ -24,3 +24,4 @@ instId = "ETH-USDT-SWAP"
 
 [notifications]
 discord_channel_id = ""
+leverage = 5

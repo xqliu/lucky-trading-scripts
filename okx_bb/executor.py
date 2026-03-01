@@ -107,9 +107,7 @@ class BBExecutor:
             return None
 
         # Notional value = equity * position_ratio * leverage
-        # 5x isolated margin: $100 equity can control $500 notional
-        leverage = 5
-        notional = equity * self.cfg.risk.position_ratio * leverage
+        notional = equity * self.cfg.risk.position_ratio * self.cfg.risk.leverage
 
         # Max loss check
         max_loss = notional * self.cfg.risk.stop_loss_pct
@@ -177,7 +175,7 @@ class BBExecutor:
         close_side = "sell" if direction == "LONG" else "buy"
 
         # Set leverage first
-        self.client.set_leverage(self.instId, "5", "isolated")
+        self.client.set_leverage(self.instId, str(self.cfg.risk.leverage), "isolated")
 
         # 1. Market order
         logger.info(f"Opening {direction} {sz} contracts on {self.instId}")
