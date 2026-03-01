@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OKX BB WebSocket Monitor v2.2 — Hardened Intrabar Trigger Mode
+OKX BB WebSocket Monitor v2.3 — Hardened Intrabar Trigger Mode
 ================================================================
 Post-review v2 hardened. Safety guarantees:
 
@@ -56,6 +56,9 @@ PING_INTERVAL = 25
 MAX_RECONNECT_DELAY = 120
 
 PENDING_STATE_FILE = STATE_DIR / "pending_orders.json"
+
+# Prefix for all Discord messages (remove when system proven stable)
+MSG_PREFIX = "[OKX测试] "
 
 
 class CandleAccumulator:
@@ -200,7 +203,7 @@ class WSMonitor:
                 close_side = "sell" if direction == "LONG" else "buy"
                 await self._rest_exchange("place_market_order",
                     self.cfg.instId, close_side, f"{pos_size:.2f}", True)
-                send_discord(f"🚨 启动发现裸仓 → 紧急平仓\n{direction} {pos_size} @ ${avg_px:.2f}", mention=True)
+                send_discord(f"{MSG_PREFIX}🚨 启动发现裸仓 → 紧急平仓\n{direction} {pos_size} @ ${avg_px:.2f}", mention=True)
             else:
                 # Reconstruct local state
                 if direction == "LONG":
@@ -221,7 +224,7 @@ class WSMonitor:
                     "entry_time": datetime.now(timezone.utc).isoformat(),
                     "entry_bar_count": 0,
                 })
-                send_discord(f"⚠️ 启动恢复仓位: {direction} @ ${avg_px:.2f}")
+                send_discord(f"{MSG_PREFIX}⚠️ 启动恢复仓位: {direction} @ ${avg_px:.2f}")
 
         # 2. Validate pending orders (check BOTH conditional and trigger types)
         if self._pending_long_algoId or self._pending_short_algoId:
@@ -377,7 +380,7 @@ class WSMonitor:
                 close_side = "sell" if direction == "LONG" else "buy"
                 await self._rest_exchange("place_market_order",
                     self.cfg.instId, close_side, fill_sz, True)
-                send_discord("🚨 入场价格无效，紧急平仓", mention=True)
+                send_discord(f"{MSG_PREFIX}🚨 入场价格无效，紧急平仓", mention=True)
                 return
 
         # Get actual position size from exchange (handles partial fills)
@@ -429,7 +432,7 @@ class WSMonitor:
             logger.error(f"SL FAILED: {sl_result} — EMERGENCY CLOSE!")
             await self._rest_exchange("place_market_order",
                 self.cfg.instId, close_side, actual_sz, True)
-            send_discord("🚨 止损设置失败，紧急平仓", mention=True)
+            send_discord(f"{MSG_PREFIX}🚨 止损设置失败，紧急平仓", mention=True)
             self.executor.save_position(None)
             return
 
@@ -443,7 +446,7 @@ class WSMonitor:
             logger.error(f"SL {sl_algo_id} not live after placement — emergency close!")
             await self._rest_exchange("place_market_order",
                 self.cfg.instId, close_side, actual_sz, True)
-            send_discord("🚨 止损未激活，紧急平仓", mention=True)
+            send_discord(f"{MSG_PREFIX}🚨 止损未激活，紧急平仓", mention=True)
             self.executor.save_position(None)
             return
 
@@ -456,7 +459,7 @@ class WSMonitor:
             tp_ord_id = tp_result["data"][0].get("ordId", "")
         else:
             logger.error(f"TP failed (SL active): {tp_result}")
-            send_discord("⚠️ TP设置失败，仅有SL保护")
+            send_discord(f"{MSG_PREFIX}⚠️ TP设置失败，仅有SL保护")
 
         # Save position state
         self.executor.save_position({
@@ -468,7 +471,7 @@ class WSMonitor:
         })
 
         send_discord(
-            f"📊 OKX BB: {direction} {self.cfg.coin}\n"
+            f"{MSG_PREFIX}📊 OKX BB: {direction} {self.cfg.coin}\n"
             f"入场: ${fill_price:.2f}\n"
             f"止损: ${sl_price:.2f} ({self.cfg.risk.stop_loss_pct*100:.1f}%)\n"
             f"止盈: ${tp_price:.2f} ({self.cfg.risk.take_profit_pct*100:.1f}%)\n"
@@ -630,7 +633,7 @@ class WSMonitor:
             if result:
                 logger.info(f"Position closed: {result.exit_reason.value}")
                 send_discord(
-                    f"📊 OKX BB 平仓: {result.exit_reason.value}\n"
+                    f"{MSG_PREFIX}📊 OKX BB 平仓: {result.exit_reason.value}\n"
                     f"PnL: {result.pnl_pct*100:+.2f}%",
                     mention=True)
         except Exception as e:
@@ -648,7 +651,7 @@ class WSMonitor:
             if result:
                 logger.info(f"Position closed: {result.exit_reason.value}")
                 send_discord(
-                    f"📊 OKX BB 平仓: {result.exit_reason.value}\n"
+                    f"{MSG_PREFIX}📊 OKX BB 平仓: {result.exit_reason.value}\n"
                     f"PnL: {result.pnl_pct*100:+.2f}%",
                     mention=True)
                 await self._atomic_cancel_and_place()
@@ -671,7 +674,7 @@ class WSMonitor:
                 if result:
                     logger.info(f"Periodic: closed {result.exit_reason.value}")
                     send_discord(
-                        f"📊 平仓 (periodic): {result.exit_reason.value}\n"
+                        f"{MSG_PREFIX}📊 平仓 (periodic): {result.exit_reason.value}\n"
                         f"PnL: {result.pnl_pct*100:+.2f}%",
                         mention=True)
                     await self._atomic_cancel_and_place()
@@ -694,7 +697,7 @@ class WSMonitor:
                             close_side = "sell" if pv > 0 else "buy"
                             await self._rest_exchange("place_market_order",
                                 self.cfg.instId, close_side, f"{abs(pv):.2f}", True)
-                            send_discord("🚨 发现无保护仓位，紧急平仓", mention=True)
+                            send_discord(f"{MSG_PREFIX}🚨 发现无保护仓位，紧急平仓", mention=True)
                         else:
                             logger.info("Orphan has SL, reconstructing state")
                             # Similar to startup reconciliation
@@ -784,7 +787,7 @@ class WSMonitor:
         self._loop = asyncio.get_event_loop()
 
         logger.info("=" * 60)
-        logger.info("OKX BB Monitor v2.2 — Hardened")
+        logger.info("OKX BB Monitor v2.3 — Hardened")
         logger.info(f"{self.cfg.instId} BB({self.cfg.strategy.bb_period}, "
                      f"{self.cfg.strategy.bb_multiplier}) "
                      f"TP={self.cfg.risk.take_profit_pct*100}% "
@@ -819,7 +822,7 @@ class WSMonitor:
                 await self._atomic_cancel_and_place()
 
         send_discord(
-            f"🟢 OKX BB v2.2 启动\n"
+            f"{MSG_PREFIX}🟢 OKX BB v2.3 启动\n"
             f"{self.cfg.instId} BB({self.cfg.strategy.bb_period}, "
             f"{self.cfg.strategy.bb_multiplier})\n"
             f"K线: {len(self.accumulator.closes)} bars")
@@ -835,7 +838,7 @@ class WSMonitor:
         logger.info("Shutdown signal received")
         self._running = False
         # Don't do blocking REST here — ExecStop cleanup.py handles it
-        send_discord("🔴 OKX BB Monitor 停止")
+        send_discord(f"{MSG_PREFIX}🔴 OKX BB Monitor 停止")
 
 
 def main():
