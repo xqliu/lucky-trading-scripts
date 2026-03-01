@@ -61,7 +61,8 @@ def load_trade_log():
     if TRADE_LOG_FILE.exists():
         try:
             return json.loads(TRADE_LOG_FILE.read_text())
-        except:
+        except Exception as e:
+            print(f"⚠️ Failed to parse trade log: {e}")
             return []
     return []
 
@@ -637,8 +638,8 @@ def open_position(signal, analysis, coin="BTC"):
             for o in orders:
                 if o.get("coin") == coin:
                     cancel_order(coin, o["oid"])
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ Failed to cancel orders before emergency close: {e}")
         try:
             emergency_close(coin, actual_size, is_long)
         except RuntimeError as close_err:
@@ -874,8 +875,8 @@ def reeval_regime_tp(position):
                 for o in get_open_orders_detailed(coin):
                     if o.get("isTrigger"):
                         cancel_order(coin, o["oid"])
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"⚠️ Failed to cancel orders during regime close: {e}")
             save_state({"position": None}, coin)
             return {"action": "CLOSED_BY_REGIME", "old_regime": old_regime, "new_regime": new_regime,
                     "old_tp_pct": old_tp_pct, "new_tp_pct": new_tp_pct, "close_price": current_price, "de": de}
@@ -893,8 +894,8 @@ def reeval_regime_tp(position):
                 for o in get_open_orders_detailed(coin):
                     if o.get("isTrigger"):
                         cancel_order(coin, o["oid"])
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"⚠️ Failed to cancel orders during regime close: {e}")
             save_state({"position": None}, coin)
             return {"action": "CLOSED_BY_REGIME", "old_regime": old_regime, "new_regime": new_regime,
                     "old_tp_pct": old_tp_pct, "new_tp_pct": new_tp_pct, "close_price": current_price, "de": de}
@@ -978,8 +979,8 @@ def fix_sl_tp(position, coin=None):
             print("🚨 紧急平仓！")
             try:
                 emergency_close(coin, size, is_long)
-            except RuntimeError:
-                pass  # already persisted danger state and notified
+            except RuntimeError as e:
+                print(f"🚨 Emergency close also failed in fix_sl_tp: {e}")
             return
     
     if not tp_exists:
