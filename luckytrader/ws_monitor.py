@@ -688,7 +688,8 @@ class NotificationManager:
         reasons = signal_info.get('signal_reasons', [])
         price = signal_info.get('price', 0)
 
-        message = f"📡 **信号检测** {signal}\n"
+        coin = signal_info.get('coin', '???')
+        message = f"📡 **信号检测** {coin} {signal}\n"
         message += f"💰 价格: ${price:,.2f}\n"
         if reasons:
             message += f"📋 理由: {'; '.join(reasons)}"

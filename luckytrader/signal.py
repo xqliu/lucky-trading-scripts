@@ -165,7 +165,7 @@ def analyze(coin='BTC'):
     if not candles_1h or len(candles_1h) < 50:
         return {"error": "数据不足"}
     
-    result = {}
+    result = {'coin': coin}
     
     # 市场上下文（资金费率、OI、ETH）
     result['market_context'] = get_market_context()
@@ -314,6 +314,8 @@ def format_report(result):
         return result['error']
     
     lines = []
+    coin_name = result.get('coin', '???')
+    lines.append(f"🪙 {coin_name}")
     lines.append(f"💰 价格: ${result['price']:,.0f}")
     lines.append(f"📊 成交量: ${result['volume_usd']:,.0f} (均值: ${result['avg_volume_24h']:,.0f}, {result['volume_ratio']:.2f}x)")
     lines.append(f"📏 区间: ${result['low_24h']:,.0f} - ${result['high_24h']:,.0f} ({result['range_24h']:.1f}%)")
