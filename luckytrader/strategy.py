@@ -284,8 +284,8 @@ def compute_sl_price(entry_price: float, sl_pct: float, is_long: bool) -> float:
 
 
 def compute_pnl_pct(direction: str, entry_price: float, exit_price: float) -> float:
-    """计算盈亏百分比"""
+    """计算盈亏百分比（返回百分比值，如 2.0 = 2%）"""
     if direction == 'LONG':
-        return (exit_price - entry_price) / entry_price
+        return (exit_price - entry_price) / entry_price * 100
     else:
-        return (entry_price - exit_price) / entry_price
+        return (entry_price - exit_price) / entry_price * 100
