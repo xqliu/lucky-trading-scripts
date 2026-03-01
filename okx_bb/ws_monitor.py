@@ -852,7 +852,6 @@ class WSMonitor:
             f"🟢 OKX BB 启动\n"
             f"{self.cfg.instId} BB({self.cfg.strategy.bb_period}, "
             f"{self.cfg.strategy.bb_multiplier})\n"
-            f"K线: {len(self.accumulator.closes)} bars\n"
             f"版本: {_commit}")
 
         await asyncio.gather(
