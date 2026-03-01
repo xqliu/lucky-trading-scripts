@@ -836,11 +836,23 @@ class WSMonitor:
             if not self._pending_long_algoId and not self._pending_short_algoId:
                 await self._atomic_cancel_and_place()
 
+        # Get last commit info for version tracking
+        import subprocess as _sp
+        try:
+            _commit = _sp.run(
+                ["git", "log", "--oneline", "-1"],
+                capture_output=True, text=True, timeout=5,
+                cwd=str(Path(__file__).parent.parent),
+            ).stdout.strip()
+        except Exception:
+            _commit = "unknown"
+
         send_discord(
-            f"🟢 OKX BB v2.3 启动\n"
+            f"🟢 OKX BB 启动\n"
             f"{self.cfg.instId} BB({self.cfg.strategy.bb_period}, "
             f"{self.cfg.strategy.bb_multiplier})\n"
-            f"K线: {len(self.accumulator.closes)} bars")
+            f"K线: {len(self.accumulator.closes)} bars\n"
+            f"版本: {_commit}")
 
         await asyncio.gather(
             self._business_loop(),
