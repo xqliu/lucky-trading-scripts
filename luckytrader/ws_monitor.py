@@ -511,11 +511,16 @@ class TradeExecutor:
 
     async def _trailing_loop(self):
         """移动止损循环"""
-        # 启动时先检查孤儿仓位
+        # 启动时先检查孤儿仓位（30 秒超时，不阻塞主循环）
         try:
-            reconciled = await asyncio.to_thread(execute.reconcile_orphan_positions)
+            reconciled = await asyncio.wait_for(
+                asyncio.to_thread(execute.reconcile_orphan_positions),
+                timeout=30
+            )
             if reconciled:
                 logger.warning(f"Reconciled {len(reconciled)} orphan positions: {reconciled}")
+        except asyncio.TimeoutError:
+            logger.error("Orphan position check timed out (30s), skipping")
         except Exception as e:
             logger.error(f"Orphan position check failed: {e}")
         
