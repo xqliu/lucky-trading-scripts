@@ -135,21 +135,20 @@ class TestMonthlyOptimizer:
         assert CURRENT["sl"] == STOP_LOSS_PCT
         assert CURRENT["tp"] == TAKE_PROFIT_PCT
         assert CURRENT["hold"] == MAX_HOLD_HOURS * 2  # 30m bars
-        assert CURRENT["vol_thresh"] == 1.25
     
-    def test_vol_thresh_in_scan_space(self):
-        """vol_thresh must be scanned (was missing before v5.1)."""
+    def test_optimizer_uses_detect_signal(self):
+        """optimizer run_backtest must use strategy.detect_signal()."""
         import inspect
-        from luckytrader.optimize import optimize
-        source = inspect.getsource(optimize)
-        assert 'vol_thresholds' in source, "vol_thresh must be in optimization scan space"
-    
-    def test_run_backtest_accepts_vol_thresh(self):
-        """run_backtest must accept vol_thresh parameter."""
+        from luckytrader.optimize import run_backtest
+        source = inspect.getsource(run_backtest)
+        assert 'detect_signal(' in source,             "optimizer must use detect_signal() from strategy.py"
+
+    def test_run_backtest_accepts_candles_4h(self):
+        """run_backtest must accept candles_4h for trend filter."""
         import inspect
         from luckytrader.optimize import run_backtest
         sig = inspect.signature(run_backtest)
-        assert 'vol_thresh' in sig.parameters
+        assert 'candles_4h' in sig.parameters
 
 
 class TestSimulationConsistency:
