@@ -611,47 +611,72 @@ def open_position(signal, analysis, coin="BTC"):
         sl_price = round(actual_entry * (1 + sl_pct))
         tp_price = round(actual_entry * (1 - tp_pct))
     
-    # Step 2: 设止损
+    # API 冷却：连续调用间等待，防 429 rate limit
+    time.sleep(1)
+    
+    # Step 2: 设止损（带重试，429 rate limit 常见）
     print(f"\n[2/3] 设止损 ${sl_price:,.2f}...")
-    try:
-        sl_result = place_stop_loss(coin, actual_size, sl_price, is_long)
-        print(f"止损结果: {json.dumps(sl_result, indent=2)}")
-        if sl_result.get("status") == "err":
-            raise Exception(f"SL failed: {sl_result}")
-    except Exception as e:
-        print(f"❌ 止损设置失败: {e}")
-        print("🚨 紧急平仓！")
+    sl_set = False
+    for sl_attempt in range(3):
+        try:
+            sl_result = place_stop_loss(coin, actual_size, sl_price, is_long)
+            print(f"止损结果: {json.dumps(sl_result, indent=2)}")
+            if sl_result.get("status") == "err":
+                raise Exception(f"SL failed: {sl_result}")
+            sl_set = True
+            break
+        except Exception as e:
+            print(f"❌ 止损设置 attempt {sl_attempt+1}/3 失败: {e}")
+            if sl_attempt < 2:
+                wait = 3 * (sl_attempt + 1)
+                print(f"⏳ 等待 {wait}s 后重试...")
+                time.sleep(wait)
+    
+    if not sl_set:
+        print("🚨 止损 3 次重试全部失败，紧急平仓！")
         try:
             emergency_close(coin, actual_size, is_long)
         except RuntimeError as close_err:
             logger.error(f"Emergency close failed after SL setup failure: {close_err}")
             return {"action": "EMERGENCY_CLOSE_FAILED", "error": str(close_err)}
-        return {"action": "SL_FAILED_CLOSED", "error": str(e)}
+        return {"action": "SL_FAILED_CLOSED", "error": "SL setup failed after 3 retries"}
     
-    # Step 3: 设止盈
+    time.sleep(1)  # API 冷却
+    
+    # Step 3: 设止盈（带重试）
     print(f"\n[3/3] 设止盈 ${tp_price:,.2f}...")
-    try:
-        tp_result = place_take_profit(coin, actual_size, tp_price, is_long)
-        print(f"止盈结果: {json.dumps(tp_result, indent=2)}")
-        if tp_result.get("status") == "err":
-            raise Exception(f"TP failed: {tp_result}")
-    except Exception as e:
-        print(f"❌ 止盈设置失败: {e}")
-        print("🚨 紧急平仓！")
+    tp_set = False
+    for tp_attempt in range(3):
+        try:
+            tp_result = place_take_profit(coin, actual_size, tp_price, is_long)
+            print(f"止盈结果: {json.dumps(tp_result, indent=2)}")
+            if tp_result.get("status") == "err":
+                raise Exception(f"TP failed: {tp_result}")
+            tp_set = True
+            break
+        except Exception as e:
+            print(f"❌ 止盈设置 attempt {tp_attempt+1}/3 失败: {e}")
+            if tp_attempt < 2:
+                wait = 3 * (tp_attempt + 1)
+                print(f"⏳ 等待 {wait}s 后重试...")
+                time.sleep(wait)
+    
+    if not tp_set:
+        print("🚨 止盈 3 次重试全部失败，紧急平仓！")
         # 先取消已设的SL
         try:
             orders = get_open_orders_detailed()
             for o in orders:
                 if o.get("coin") == coin:
                     cancel_order(coin, o["oid"])
-        except Exception as e:
-            print(f"⚠️ Failed to cancel orders before emergency close: {e}")
+        except Exception as e2:
+            print(f"⚠️ Failed to cancel orders before emergency close: {e2}")
         try:
             emergency_close(coin, actual_size, is_long)
         except RuntimeError as close_err:
             logger.error(f"Emergency close failed after TP setup failure: {close_err}")
             return {"action": "EMERGENCY_CLOSE_FAILED", "error": str(close_err)}
-        return {"action": "TP_FAILED_CLOSED", "error": str(e)}
+        return {"action": "TP_FAILED_CLOSED", "error": "TP setup failed after 3 retries"}
     
     # 全部成功，保存状态 (per-coin)
     coin_state = {

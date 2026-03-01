@@ -60,20 +60,38 @@ def get_meta():
     info = Info(constants.MAINNET_API_URL, skip_ws=True)
     return info.meta()
 
+def _retry_on_429(fn, max_retries=3, base_delay=2.0):
+    """Retry an API call on 429 rate limit with exponential backoff.
+    
+    Handles the case where Hyperliquid returns 429 when multiple coins
+    open positions near-simultaneously. Each coin retries independently.
+    """
+    import time as _time
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if '429' in str(e) and attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                print(f"⚠️ 429 rate limit, retrying in {delay:.0f}s (attempt {attempt+1}/{max_retries})")
+                _time.sleep(delay)
+            else:
+                raise
+
+
 def place_order(coin: str, is_buy: bool, size: float, price: float, reduce_only: bool = False):
     """Place a limit order"""
     account = Account.from_key(API_PRIVATE_KEY)
     exchange = Exchange(account, constants.MAINNET_API_URL, account_address=MAIN_WALLET)
     
-    order_result = exchange.order(
+    return _retry_on_429(lambda: exchange.order(
         coin,
         is_buy,
         size,
         price,
         {"limit": {"tif": "Gtc"}},
         reduce_only=reduce_only
-    )
-    return order_result
+    ))
 
 def place_market_order(coin: str, is_buy: bool, size: float):
     """Place a market order"""
@@ -88,14 +106,13 @@ def place_market_order(coin: str, is_buy: bool, size: float):
     else:
         price = round(current_price * (1 - slippage))
     
-    order_result = exchange.order(
+    return _retry_on_429(lambda: exchange.order(
         coin,
         is_buy,
         size,
         price,
         {"limit": {"tif": "Ioc"}}  # Immediate or cancel for market-like behavior
-    )
-    return order_result
+    ))
 
 def cancel_order(coin: str, oid: int):
     """Cancel an order"""
