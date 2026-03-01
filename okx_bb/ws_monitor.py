@@ -840,7 +840,7 @@ class WSMonitor:
         import subprocess as _sp
         try:
             _commit = _sp.run(
-                ["git", "log", "--oneline", "-1"],
+                ["git", "log", "--format=%h %s (%ci)", "-1"],
                 capture_output=True, text=True, timeout=5,
                 cwd=str(Path(__file__).parent.parent),
             ).stdout.strip()
