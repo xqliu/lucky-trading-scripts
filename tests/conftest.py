@@ -123,5 +123,7 @@ def _block_real_side_effects():
 
     with patch('luckytrader.execute.notify_discord') as _mock_nd, \
          patch('luckytrader.execute.trigger_optimization') as _mock_to, \
+         patch('time.sleep') as _mock_sleep, \
          patch.object(_socket.socket, 'connect', _blocked_connect):
-        yield {"notify_discord": _mock_nd, "trigger_optimization": _mock_to}
+        yield {"notify_discord": _mock_nd, "trigger_optimization": _mock_to,
+               "time_sleep": _mock_sleep}
