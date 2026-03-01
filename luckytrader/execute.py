@@ -94,20 +94,9 @@ def record_trade_result(pnl_pct, direction, coin, reason):
         trigger_optimization()
 
 def notify_discord(message):
-    """通过 openclaw 发送 Discord 通知"""
-    try:
-        import subprocess
-        import shutil
-        full_msg = f"{DISCORD_MENTIONS}\n{message}"
-        openclaw_path = shutil.which("openclaw") or str(Path.home() / ".local/bin/openclaw")
-        subprocess.run(
-            [openclaw_path, "system", "event", "--text", 
-             f"发送以下消息到 Discord #投资 (channelId: {DISCORD_CHANNEL_ID}):\n\n{full_msg}",
-             "--mode", "now"],
-            capture_output=True, text=True, timeout=30
-        )
-    except Exception as e:
-        print(f"Discord通知失败: {e}")
+    """通过 core.notify.send_discord 发送 Discord 通知"""
+    from core.notify import send_discord
+    send_discord(message, channel_id=DISCORD_CHANNEL_ID, mention=True)
 
 def trigger_optimization():
     """连亏触发优化"""
