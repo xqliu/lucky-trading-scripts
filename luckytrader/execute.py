@@ -451,7 +451,13 @@ def _execute_inner(dry_run, mode, _CST, coin="BTC"):
         print(f"⚠️ {coin} 开仓前二次检查发现已有持仓，跳过")
         return {"action": "HOLD", "reason": "position_exists_on_recheck"}
 
-    return open_position(signal, result, coin)
+    open_result = open_position(signal, result, coin)
+
+    # CLI 路径也必须做 early validation
+    if open_result.get("action") == "OPENED":
+        _run_early_validation_sync(coin)
+
+    return open_result
 
 def dry_run_open(signal, analysis, coin="BTC"):
     """Dry run: 计算开仓参数但不下单"""
@@ -727,6 +733,77 @@ def open_position(signal, analysis, coin="BTC"):
         "regime_tp_pct": tp_pct,
         "regime_sl_pct": sl_pct,
     }
+
+def _run_early_validation_sync(coin: str):
+    """同步版 early validation — CLI 路径用。
+
+    等待 early_validation_bars * 30 分钟后检查 MFE，
+    不满足阈值则平仓。阻塞调用。
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        state = load_state(coin)
+        pos = state.get("position")
+        if not (pos and pos.get("entry_time")):
+            logger.warning(f"Early validation {coin}: no position/entry_time in state, skipping")
+            return
+
+        entry_time = datetime.fromisoformat(pos["entry_time"])
+        entry_price = pos["entry_price"]
+        direction = pos["direction"]
+        ev_bars = _cfg.strategy.early_validation_bars
+        ev_minutes = ev_bars * 30
+        ev_mfe_thr = _cfg.strategy.early_validation_mfe
+
+        # 计算还需等多久
+        elapsed = (datetime.now(timezone.utc) - entry_time).total_seconds() / 60
+        wait_minutes = ev_minutes - elapsed
+        if wait_minutes > 0:
+            print(f"⏳ {coin} Early validation: 等待 {wait_minutes:.0f} 分钟后检查方向...")
+            import time as _time
+            _time.sleep(wait_minutes * 60)
+
+        # 拉 K 线
+        from hyperliquid.info import Info as _Info
+        _info = _Info(skip_ws=True)
+        import time as _time
+        _end = int(_time.time() * 1000)
+        _start = int(entry_time.timestamp() * 1000)
+        candles = _info.candles_snapshot(coin, '30m', _start, _end)
+
+        if not candles or len(candles) < 2:
+            logger.warning(f"Early validation {coin}: insufficient candles ({len(candles) if candles else 0}), skipping")
+            return
+
+        highs = [float(c['h']) for c in candles[1:]]
+        lows = [float(c['l']) for c in candles[1:]]
+        if direction == 'LONG':
+            mfe = (max(highs) - entry_price) / entry_price * 100
+        else:
+            mfe = (entry_price - min(lows)) / entry_price * 100
+
+        logger.info(f"Early validation {coin}: {direction} @ ${entry_price:,.0f}, MFE={mfe:.3f}%, threshold={ev_mfe_thr}%")
+
+        if mfe < ev_mfe_thr:
+            logger.warning(f"❌ Early validation FAILED {coin}: MFE {mfe:.3f}% < {ev_mfe_thr}%")
+            print(f"❌ {coin} 1h方向确认失败: MFE {mfe:.3f}% < {ev_mfe_thr}%, 提前出局")
+
+            size = abs(pos["size"])
+            is_long = direction == "LONG"
+            pnl_pct = compute_pnl_pct(direction, entry_price, get_market_price(coin))
+            close_and_cleanup(
+                coin, is_long, size, reason="EARLY_EXIT",
+                pnl_pct=pnl_pct,
+                extra_msg=f"1h方向确认失败 MFE={mfe:.3f}%<{ev_mfe_thr}%"
+            )
+        else:
+            logger.info(f"✅ Early validation PASSED {coin}: MFE {mfe:.3f}% >= {ev_mfe_thr}%")
+            print(f"✅ {coin} 1h方向确认通过: MFE {mfe:.3f}% >= {ev_mfe_thr}%")
+    except Exception as e:
+        logger.error(f"Early validation sync error for {coin}: {e}")
+
 
 def close_and_cleanup(coin: str, is_long: bool, size: float, reason: str,
                       pnl_pct: float = None, extra_msg: str = ""):
