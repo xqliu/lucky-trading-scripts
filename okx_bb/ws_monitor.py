@@ -838,12 +838,16 @@ class WSMonitor:
 
         # Get last commit info for version tracking
         import subprocess as _sp
+        from datetime import timezone, timedelta
         try:
-            _commit = _sp.run(
-                ["git", "log", "--format=%h %s (%ci)", "-1"],
+            _raw = _sp.run(
+                ["git", "log", "--format=%h %s|%ct", "-1"],
                 capture_output=True, text=True, timeout=5,
                 cwd=str(Path(__file__).parent.parent),
             ).stdout.strip()
+            _parts = _raw.rsplit("|", 1)
+            _sgt = datetime.fromtimestamp(int(_parts[1]), tz=timezone(timedelta(hours=8)))
+            _commit = f"{_parts[0]} ({_sgt:%Y-%m-%d %H:%M} SGT)"
         except Exception:
             _commit = "unknown"
 
