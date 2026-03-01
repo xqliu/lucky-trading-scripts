@@ -233,10 +233,10 @@ class WSMonitor:
             live_ids = {a["algoId"] for a in (algos_trigger + algos_cond2)}
 
             if self._pending_long_algoId and self._pending_long_algoId not in live_ids:
-                logger.warning(f"Stale pending LONG {self._pending_long_algoId}")
+                logger.info(f"Cleared expired LONG trigger {self._pending_long_algoId}")
                 self._pending_long_algoId = None
             if self._pending_short_algoId and self._pending_short_algoId not in live_ids:
-                logger.warning(f"Stale pending SHORT {self._pending_short_algoId}")
+                logger.info(f"Cleared expired SHORT trigger {self._pending_short_algoId}")
                 self._pending_short_algoId = None
             self._save_pending()
 
