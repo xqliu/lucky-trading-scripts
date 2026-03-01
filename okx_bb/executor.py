@@ -183,12 +183,12 @@ class BBExecutor:
 
         if result.get("code") != "0":
             logger.error(f"Market order failed: {result}")
-            send_discord(f"{MSG_PREFIX}❌ OKX BB: 开仓失败\n{result.get('msg', 'unknown')}")
+            send_discord(f"{MSG_PREFIX}❌ OKX BB: 开仓失败\n{result.get('msg', 'unknown')}", mention=True)
             return False
 
         if not result.get("data") or not result["data"]:
             logger.error(f"Market order returned empty data: {result}")
-            send_discord(f"{MSG_PREFIX}❌ OKX BB: 开仓返回空数据\n{result}")
+            send_discord(f"{MSG_PREFIX}❌ OKX BB: 开仓返回空数据\n{result}", mention=True)
             return False
 
         ordId = result["data"][0].get("ordId", "")
