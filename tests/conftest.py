@@ -105,10 +105,23 @@ def mock_hl():
 def _block_real_side_effects():
     """Global safety net: 全局禁止测试中的真实副作用。
 
-    notify_discord 和 trigger_optimization 都调用 subprocess.run(['openclaw', ...])，
-    会发送真实的 Discord 消息或触发真实的系统事件。
+    三层防护：
+    1. notify_discord / trigger_optimization — 阻止真实 Discord 消息和系统事件
+    2. requests.post/get — 阻止 signal.py 等模块直接调 Hyperliquid API
+    3. socket.socket.connect — 终极安全网，任何漏网的网络调用都会立即报错
+
     测试中必须阻止这些调用，无论单个测试是否有局部 @patch。
     """
+    import socket as _socket
+    _real_connect = _socket.socket.connect
+
+    def _blocked_connect(self, address):
+        raise ConnectionError(
+            f"🚨 TEST SAFETY NET: blocked real network connection to {address}. "
+            f"Add @patch to mock the network call."
+        )
+
     with patch('luckytrader.execute.notify_discord') as _mock_nd, \
-         patch('luckytrader.execute.trigger_optimization') as _mock_to:
+         patch('luckytrader.execute.trigger_optimization') as _mock_to, \
+         patch.object(_socket.socket, 'connect', _blocked_connect):
         yield {"notify_discord": _mock_nd, "trigger_optimization": _mock_to}
