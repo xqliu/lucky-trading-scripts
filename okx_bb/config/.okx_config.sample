@@ -1,0 +1,5 @@
+# OKX API credentials — copy to .okx_config and fill in values
+# These keys should be trade-only (no withdrawal permission)
+OKX_API_KEY=your-api-key
+OKX_SECRET_KEY=your-secret-key
+OKX_PASSPHRASE=your-passphrase
