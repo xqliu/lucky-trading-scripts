@@ -343,7 +343,9 @@ class WSMonitor:
         if trend == "up" and upper > current_price * 1.001:
             result = await self._rest_exchange(
                 "place_trigger_order", self.cfg.instId, "buy", sz,
-                triggerPx=f"{upper:.2f}", orderPx="-1", triggerPxType="last")
+                triggerPx=f"{upper:.2f}",
+                orderPx=f"{upper * 1.001:.2f}",  # limit +0.1% buffer for fill certainty
+                triggerPxType="last")
             if result.get("code") == "0" and result.get("data"):
                 self._pending_long_algoId = result["data"][0].get("algoId", "")
                 logger.info(f"📈 LONG trigger at {upper:.2f} ({self._pending_long_algoId})")
@@ -353,7 +355,9 @@ class WSMonitor:
         elif trend == "down" and lower < current_price * 0.999:
             result = await self._rest_exchange(
                 "place_trigger_order", self.cfg.instId, "sell", sz,
-                triggerPx=f"{lower:.2f}", orderPx="-1", triggerPxType="last")
+                triggerPx=f"{lower:.2f}",
+                orderPx=f"{lower * 0.999:.2f}",  # limit -0.1% buffer for fill certainty
+                triggerPxType="last")
             if result.get("code") == "0" and result.get("data"):
                 self._pending_short_algoId = result["data"][0].get("algoId", "")
                 logger.info(f"📉 SHORT trigger at {lower:.2f} ({self._pending_short_algoId})")
