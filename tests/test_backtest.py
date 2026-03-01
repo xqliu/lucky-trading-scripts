@@ -90,28 +90,25 @@ class TestSimulateTrade:
 
 
 class TestBacktestVolThreshold:
-    """Volume threshold in backtest must match live system."""
-    
-    def test_backtest_v2_uses_correct_vol_threshold(self):
-        """backtest_30m_v2 default should use 1.25x (matching live), not 2.0x."""
+    """Volume threshold in backtest must use strategy.detect_signal()."""
+
+    def test_backtest_uses_detect_signal(self):
+        """backtest.run_backtest must call strategy.detect_signal(), not hand-write signals."""
         import inspect
-        from luckytrader.backtest import run_strategy_b
-        source = inspect.getsource(run_strategy_b)
-        # This test WILL FAIL until we fix the bug
-        # BUG: currently hardcoded as > 2.0
-        # After fix: should be parameterizable or use 1.25
-        assert '> 2.0' in source or 'vol_thresh' in source, \
-            "run_strategy_b should accept vol_thresh parameter or use 1.25"
+        from luckytrader.backtest import run_backtest
+        source = inspect.getsource(run_backtest)
+        assert 'detect_signal(' in source, \
+            "run_backtest must use detect_signal() from strategy.py"
 
 
 class TestBacktestEntryPrice:
     """Entry must use next candle's open (no look-ahead bias)."""
-    
+
     def test_entry_uses_next_open(self):
         """Entry price should be opens[i+1], not closes[i]."""
         import inspect
-        from luckytrader.backtest import run_strategy_b
-        source = inspect.getsource(run_strategy_b)
+        from luckytrader.backtest import run_backtest
+        source = inspect.getsource(run_backtest)
         assert 'opens[i + 1]' in source or 'opens[i+1]' in source, \
             "Must use next candle open for entry (no look-ahead bias)"
     
