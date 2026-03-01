@@ -524,9 +524,15 @@ class TradeExecutor:
         except Exception as e:
             logger.error(f"Orphan position check failed: {e}")
         
+        logger.info("Trailing loop: entering main loop")
         while True:
             try:
-                if not await asyncio.to_thread(self.has_position):
+                logger.debug("Trailing loop: checking position...")
+                has_pos = await asyncio.wait_for(
+                    asyncio.to_thread(self.has_position),
+                    timeout=15
+                )
+                if not has_pos:
                     logger.info("No position found, stopping trailing monitor")
                     break
 
