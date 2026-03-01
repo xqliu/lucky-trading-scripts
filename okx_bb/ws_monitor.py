@@ -743,10 +743,46 @@ class WSMonitor:
                         if not has_sl:
                             pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
                             pv = float(pos_info.get("pos", 0))
+                            d = "LONG" if pv > 0 else "SHORT"
+                            ap = float(pos_info.get("avgPx", 0))
                             close_side = "sell" if pv > 0 else "buy"
-                            await self._rest_exchange("place_market_order",
-                                self.cfg.instId, close_side, f"{abs(pv):.2f}", True)
-                            send_discord(f"{MSG_PREFIX}🚨 发现无保护仓位，紧急平仓", mention=True)
+                            pos_size = abs(pv)
+
+                            # Try to re-set SL/TP first (position may be profitable)
+                            if d == "LONG":
+                                sl_p = ap * (1 - self.cfg.risk.stop_loss_pct)
+                                tp_p = ap * (1 + self.cfg.risk.take_profit_pct)
+                            else:
+                                sl_p = ap * (1 + self.cfg.risk.stop_loss_pct)
+                                tp_p = ap * (1 - self.cfg.risk.take_profit_pct)
+
+                            sl_result = await self._rest_exchange(
+                                "place_stop_order", self.cfg.instId, close_side, f"{pos_size:.2f}",
+                                slTriggerPx=f"{sl_p:.2f}")
+
+                            if sl_result.get("code") != "0" or not sl_result.get("data"):
+                                logger.error(f"Periodic: SL re-set FAILED — emergency close!")
+                                await self._rest_exchange("place_market_order",
+                                    self.cfg.instId, close_side, f"{pos_size:.2f}", True)
+                                send_discord(f"{MSG_PREFIX}🚨 发现无保护仓位且SL设置失败，紧急平仓", mention=True)
+                                self.executor.save_position(None)
+                            else:
+                                sl_algo_id = sl_result["data"][0].get("algoId", "")
+                                tp_result = await self._rest_exchange(
+                                    "place_limit_order", self.cfg.instId, close_side, f"{pos_size:.2f}",
+                                    px=f"{tp_p:.2f}", reduceOnly=True)
+                                tp_id = tp_result.get("data", [{}])[0].get("ordId", "") if tp_result.get("code") == "0" else ""
+
+                                self.executor.save_position({
+                                    "direction": d, "entry_price": ap,
+                                    "size": f"{pos_size:.2f}", "sl_price": sl_p, "tp_price": tp_p,
+                                    "sl_algo_id": sl_algo_id, "tp_order_id": tp_id,
+                                    "entry_time": datetime.now(timezone.utc).isoformat(),
+                                    "entry_bar_count": 0,
+                                })
+                                send_discord(f"{MSG_PREFIX}⚠️ 发现无保护仓位 → 已重设SL/TP\n"
+                                             f"{d} {pos_size} @ ${ap:.2f}\n"
+                                             f"SL: ${sl_p:.2f} / TP: ${tp_p:.2f}", mention=True)
                         else:
                             logger.info("Orphan has SL, reconstructing state")
                             # Similar to startup reconciliation
