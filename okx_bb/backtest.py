@@ -269,7 +269,7 @@ def report(name: str, trades: List[Trade], candles: list):
 
 # === Data fetching ===
 
-def fetch_candles(cfg: OKXConfig, max_candles: int = 15000) -> list:
+def fetch_candles(cfg: OKXConfig, max_candles: int = 50000) -> list:
     """Fetch historical candles from OKX API."""
     import time as _time
     from okx_bb.exchange import OKXClient
