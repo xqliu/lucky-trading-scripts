@@ -7,6 +7,11 @@ from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+# Mock send_discord BEFORE importing executor to prevent real Discord messages
+import unittest.mock
+_discord_mock = unittest.mock.patch('core.notify.send_discord', return_value=True)
+_discord_mock.start()
+
 from okx_bb.executor import BBExecutor, POSITION_STATE_FILE
 from okx_bb.config import OKXConfig, StrategyConfig, RiskConfig, FeeConfig
 from core.types import ExitReason
