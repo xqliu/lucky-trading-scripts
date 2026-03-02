@@ -61,10 +61,15 @@ class Trade:
 
 def simulate_trade(candles: list, entry_idx: int, direction: str,
                    entry_price: float, sl_pct: float, tp_pct: float,
-                   max_hold: int, fee: float) -> Trade:
+                   max_hold: int, fee: float,
+                   check_entry_bar: bool = False) -> Trade:
     """Simulate a single trade with SL/TP/timeout.
 
     Uses OHLC bars to check SL/TP intrabar (conservative: SL checked first).
+
+    Args:
+        check_entry_bar: If True, check entry bar's H/L for SL/TP hit.
+            Use for intrabar entries where trigger fires mid-bar.
     """
     if direction == "LONG":
         sl = entry_price * (1 - sl_pct)
@@ -73,7 +78,8 @@ def simulate_trade(candles: list, entry_idx: int, direction: str,
         sl = entry_price * (1 + sl_pct)
         tp = entry_price * (1 - tp_pct)
 
-    for i in range(entry_idx + 1, min(entry_idx + max_hold + 1, len(candles))):
+    start_idx = entry_idx if check_entry_bar else entry_idx + 1
+    for i in range(start_idx, min(entry_idx + max_hold + 1, len(candles))):
         bar = candles[i]
         if direction == "LONG":
             # Check SL first (conservative)
@@ -181,15 +187,16 @@ def backtest_intrabar(candles: list, cfg: OKXConfig) -> List[Trade]:
 
         if trend == "up" and bar["h"] >= upper:
             signal = "LONG"
-            entry_price = upper  # trigger fill at BB boundary
+            entry_price = upper * 1.001  # trigger limit +0.1% buffer (matches ws_monitor)
         elif trend == "down" and bar["l"] <= lower:
             signal = "SHORT"
-            entry_price = lower
+            entry_price = lower * 0.999  # trigger limit -0.1% buffer (matches ws_monitor)
 
         if signal and entry_price:
             trade = simulate_trade(candles, idx, signal, entry_price,
                                    cfg.risk.stop_loss_pct, cfg.risk.take_profit_pct,
-                                   cfg.risk.max_hold_bars, fee)
+                                   cfg.risk.max_hold_bars, fee,
+                                   check_entry_bar=True)
             trades.append(trade)
             in_trade = True
             exit_idx = trade.exit_idx
@@ -199,11 +206,15 @@ def backtest_intrabar(candles: list, cfg: OKXConfig) -> List[Trade]:
 
 # === Reporting ===
 
-def report(name: str, trades: List[Trade], candles: list, leverage: int = 1):
+def report(name: str, trades: List[Trade], candles: list, leverage: int = 1,
+           position_ratio: float = 1.0):
     """Print backtest statistics.
 
     Args:
-        leverage: Position leverage multiplier. PnL per trade is scaled by this.
+        leverage: Position leverage multiplier.
+        position_ratio: Fraction of equity used per trade (0-1).
+            Effective leverage = leverage * position_ratio.
+            PnL per trade scaled by effective leverage.
     """
     if not trades:
         print(f"\n{'='*50}")
@@ -214,10 +225,18 @@ def report(name: str, trades: List[Trade], candles: list, leverage: int = 1):
     losses = [t for t in trades if t.pnl <= 0]
     win_rate = len(wins) / len(trades) * 100
 
-    # Equity curve (compounded) — apply leverage to each trade's PnL
+    # Equity curve (compounded) — apply effective leverage to each trade's PnL
+    # Effective leverage = leverage * position_ratio
+    # Clamp leveraged PnL to -100% (liquidation — can't lose more than account)
+    eff_lev = leverage * position_ratio
     equity = [1.0]
     for t in trades:
-        equity.append(equity[-1] * (1 + t.pnl * leverage))
+        lev_pnl = t.pnl * eff_lev
+        if lev_pnl < -1.0:
+            lev_pnl = -1.0  # liquidated — account wiped
+        equity.append(equity[-1] * (1 + lev_pnl))
+        if equity[-1] < 1e-10:
+            break  # account blown, stop
     compounded_return = equity[-1] - 1  # This is the REAL return
 
     peak = equity[0]
@@ -234,14 +253,19 @@ def report(name: str, trades: List[Trade], candles: list, leverage: int = 1):
     gross_loss = abs(sum(t.pnl for t in losses)) if losses else 0.001
     pf = gross_win / gross_loss
 
-    # Walk-forward (4 segments) — use compounded equity per segment
+    # Walk-forward (4 segments) — use compounded equity per segment WITH leverage
     seg_size = len(trades) // 4
     wf_pass = 0
     for i in range(4):
         seg = trades[i * seg_size:(i + 1) * seg_size] if i < 3 else trades[i * seg_size:]
         seg_eq = 1.0
         for t in seg:
-            seg_eq *= (1 + t.pnl)
+            lp = t.pnl * eff_lev
+            if lp < -1.0:
+                lp = -1.0
+            seg_eq *= (1 + lp)
+            if seg_eq < 1e-10:
+                break
         if seg_eq > 1.0:
             wf_pass += 1
 
@@ -253,18 +277,21 @@ def report(name: str, trades: List[Trade], candles: list, leverage: int = 1):
     # Time range
     days = (candles[-1]["ts"] - candles[0]["ts"]) / 86400000
 
+    lev_label = f"{leverage}x" if position_ratio == 1.0 else f"{leverage}x × {position_ratio:.0%} = eff {eff_lev:.1f}x"
     print(f"\n{'='*60}")
-    print(f"  {name}  [{leverage}x leverage]")
+    print(f"  {name}  [{lev_label}]")
     print(f"{'='*60}")
     print(f"  Period: {days:.0f} days | Trades: {len(trades)}")
-    print(f"  Return: {compounded_return*100:+.1f}% (compounded, {leverage}x)")
+    print(f"  Return: {compounded_return*100:+.1f}% (compounded)")
     print(f"  $100 → ${100 * equity[-1]:.2f}")
     print(f"  Win rate: {win_rate:.1f}% | PF: {pf:.2f}")
     print(f"  Max DD: {max_dd*100:.1f}%")
     print(f"  WF: {wf_pass}/4")
     print(f"  Exits: SL={sl_count} TP={tp_count} Timeout={to_count}")
-    print(f"  Avg win: {sum(t.pnl for t in wins)/len(wins)*100:+.2f}%" if wins else "  No wins")
-    print(f"  Avg loss: {sum(t.pnl for t in losses)/len(losses)*100:+.2f}%" if losses else "  No losses")
+    avg_w = sum(t.pnl for t in wins)/len(wins)*eff_lev*100 if wins else 0
+    avg_l = sum(t.pnl for t in losses)/len(losses)*eff_lev*100 if losses else 0
+    print(f"  Avg win: {avg_w:+.2f}% (account)" if wins else "  No wins")
+    print(f"  Avg loss: {avg_l:+.2f}% (account)" if losses else "  No losses")
     print(f"{'='*60}")
 
     return {
@@ -389,16 +416,20 @@ def main():
     print(f"\nConfig: BB({cfg.strategy.bb_period}, {cfg.strategy.bb_multiplier}) "
           f"EMA({cfg.strategy.trend_ema_period}, lookback={cfg.strategy.trend_lookback})")
     lev = cfg.risk.leverage
+    pr = cfg.risk.position_ratio
+    eff = lev * pr
     print(f"Risk: TP={cfg.risk.take_profit_pct*100}% SL={cfg.risk.stop_loss_pct*100}% "
-          f"MaxHold={cfg.risk.max_hold_bars} bars  Leverage={lev}x")
+          f"MaxHold={cfg.risk.max_hold_bars} bars")
+    print(f"Leverage: {lev}x  Position ratio: {pr:.0%}  Effective: {eff:.1f}x")
     print(f"Fee: {cfg.fees.taker_fee*2*100:.2f}% round-trip")
 
     # Run both modes
     close_trades = backtest_close(candles, cfg)
     intrabar_trades = backtest_intrabar(candles, cfg)
 
-    r1 = report("CLOSE (detect_signal)", close_trades, candles, leverage=lev)
-    r2 = report("INTRABAR (ws_monitor trigger)", intrabar_trades, candles, leverage=lev)
+    pr = cfg.risk.position_ratio
+    r1 = report("CLOSE (detect_signal)", close_trades, candles, leverage=lev, position_ratio=pr)
+    r2 = report("INTRABAR (ws_monitor trigger)", intrabar_trades, candles, leverage=lev, position_ratio=pr)
 
     if r1 and r2:
         print(f"\nIntrabar vs Close: ${r2['final_equity']:.0f} vs ${r1['final_equity']:.0f} "
