@@ -51,3 +51,16 @@ class TestBacktestConsistency:
         from okx_bb.backtest import backtest_close
         src = inspect.getsource(backtest_close)
         assert "cfg.fees" in src
+
+    def test_close_confirm_buffer_uses_prev_close_filter(self):
+        """Close-confirm mode must only enter when prev close is already outside BB."""
+        from okx_bb.backtest import backtest_close_confirm_buffer
+        src = inspect.getsource(backtest_close_confirm_buffer)
+        assert "prev_close > upper" in src
+        assert "prev_close < lower" in src
+
+    def test_close_confirm_buffer_uses_execution_buffer(self):
+        """Close-confirm mode must read buffer from config.execution."""
+        from okx_bb.backtest import backtest_close_confirm_buffer
+        src = inspect.getsource(backtest_close_confirm_buffer)
+        assert "cfg.execution.entry_buffer_pct" in src

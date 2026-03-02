@@ -204,6 +204,68 @@ def backtest_intrabar(candles: list, cfg: OKXConfig) -> List[Trade]:
     return trades
 
 
+def backtest_close_confirm_buffer(candles: list, cfg: OKXConfig) -> List[Trade]:
+    """Close-confirm breakout mode with trend-direction entry buffer.
+
+    Entry rule:
+      - LONG only when trend=up and bar high breaks upper BB AND prev close > upper
+      - SHORT only when trend=down and bar low breaks lower BB AND prev close < lower
+
+    Entry price:
+      - LONG: prev_close * (1 + entry_buffer_pct)
+      - SHORT: prev_close * (1 - entry_buffer_pct)
+
+    This avoids optimistic "entry at BB" assumption for immediate trigger fills.
+    """
+    closes = [c["c"] for c in candles]
+    trades = []
+    in_trade = False
+    exit_idx = 0
+
+    # maker-like entry + taker-like exit is a practical average for this mode
+    fee = (cfg.fees.maker_fee + cfg.fees.taker_fee)
+
+    min_bars = max(cfg.strategy.bb_period + 1,
+                   cfg.strategy.trend_ema_period + cfg.strategy.trend_lookback + 1)
+
+    for idx in range(min_bars, len(candles)):
+        if in_trade and idx <= exit_idx:
+            continue
+        in_trade = False
+
+        bb = get_bb_levels(closes, cfg.strategy.bb_period, cfg.strategy.bb_multiplier, idx)
+        if bb is None:
+            continue
+        _, upper, lower = bb
+
+        trend = get_trend(closes, idx, cfg.strategy.trend_ema_period,
+                          cfg.strategy.trend_lookback)
+
+        bar = candles[idx]
+        prev_close = closes[idx - 1]
+
+        signal = None
+        entry_price = None
+
+        if trend == "up" and bar["h"] >= upper and prev_close > upper:
+            signal = "LONG"
+            entry_price = prev_close * (1 + cfg.execution.entry_buffer_pct)
+        elif trend == "down" and bar["l"] <= lower and prev_close < lower:
+            signal = "SHORT"
+            entry_price = prev_close * (1 - cfg.execution.entry_buffer_pct)
+
+        if signal and entry_price:
+            trade = simulate_trade(candles, idx, signal, entry_price,
+                                   cfg.risk.stop_loss_pct, cfg.risk.take_profit_pct,
+                                   cfg.risk.max_hold_bars, fee,
+                                   check_entry_bar=True)
+            trades.append(trade)
+            in_trade = True
+            exit_idx = trade.exit_idx
+
+    return trades
+
+
 # === Reporting ===
 
 def report(name: str, trades: List[Trade], candles: list, leverage: int = 1,
@@ -421,19 +483,22 @@ def main():
     print(f"Risk: TP={cfg.risk.take_profit_pct*100}% SL={cfg.risk.stop_loss_pct*100}% "
           f"MaxHold={cfg.risk.max_hold_bars} bars")
     print(f"Leverage: {lev}x  Position ratio: {pr:.0%}  Effective: {eff:.1f}x")
-    print(f"Fee: {cfg.fees.taker_fee*2*100:.2f}% round-trip")
+    print(f"Fee (intrabar/close): {cfg.fees.taker_fee*2*100:.2f}% round-trip")
+    print(f"Execution mode: {cfg.execution.mode}  buffer={cfg.execution.entry_buffer_pct*100:.2f}%")
 
-    # Run both modes
+    # Run all modes
     close_trades = backtest_close(candles, cfg)
     intrabar_trades = backtest_intrabar(candles, cfg)
+    close_confirm_trades = backtest_close_confirm_buffer(candles, cfg)
 
     pr = cfg.risk.position_ratio
     r1 = report("CLOSE (detect_signal)", close_trades, candles, leverage=lev, position_ratio=pr)
     r2 = report("INTRABAR (ws_monitor trigger)", intrabar_trades, candles, leverage=lev, position_ratio=pr)
+    r3 = report("CLOSE_CONFIRM_BUFFER", close_confirm_trades, candles, leverage=lev, position_ratio=pr)
 
-    if r1 and r2:
-        print(f"\nIntrabar vs Close: ${r2['final_equity']:.0f} vs ${r1['final_equity']:.0f} "
-              f"({r2['trades'] - r1['trades']:+d} trades)")
+    if r1 and r2 and r3:
+        print(f"\nFinal equity: CLOSE=${r1['final_equity']:.0f} | INTRABAR=${r2['final_equity']:.0f} | "
+              f"CLOSE_CONFIRM_BUFFER=${r3['final_equity']:.0f}")
 
 
 if __name__ == "__main__":
