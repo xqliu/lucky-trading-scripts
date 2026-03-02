@@ -2,12 +2,18 @@
 Shared fixtures for Lucky Trading System tests.
 All exchange/network calls are mocked — no real money touched.
 """
+import os
 import sys
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# Point config loader to real config.toml (private workspace, not repo)
+_REAL_CONFIG_DIR = Path.home() / ".openclaw/workspace/trading/config"
+if _REAL_CONFIG_DIR.exists():
+    os.environ["LUCKYTRADER_CONFIG_DIR"] = str(_REAL_CONFIG_DIR)
 
 # ---------------------------------------------------------------------------
 # We need to import our scripts, but hl_trade.py loads secrets at module level.
@@ -120,6 +126,11 @@ def _block_real_side_effects():
             f"🚨 TEST SAFETY NET: blocked real network connection to {address}. "
             f"Add @patch to mock the network call."
         )
+
+    # Reset config cache so tests pick up real config.toml
+    import luckytrader.config as _cfg_mod
+    _cfg_mod._CONFIG = None
+    _cfg_mod._COIN_CONFIGS = {}
 
     # Isolate ALL state files to prevent production pollution
     import tempfile
