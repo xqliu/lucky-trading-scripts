@@ -908,6 +908,12 @@ class WSMonitor:
         recovery = self.state_manager.recover_on_startup()
         if recovery["has_position"]:
             logger.info("Existing position detected, starting trailing monitor")
+            # 已有仓位跳过 early validation（重启不应触发误平仓）
+            from luckytrader.execute import get_position
+            for coin in TRADING_COINS:
+                if get_position(coin):
+                    self.trade_executor._early_validation_done[coin] = True
+                    logger.info(f"Skipping early validation for recovered {coin} position")
             await self.trade_executor.start_trailing_monitor()
 
         # 建立WebSocket连接

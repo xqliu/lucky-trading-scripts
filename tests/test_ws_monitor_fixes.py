@@ -538,3 +538,49 @@ class TestNotifyAsync:
             await nm.async_notify_error("test error", critical=True)
 
         assert 'notify_error' in sent_in_thread
+
+
+# === Fix: Restart must skip early validation for recovered positions ===
+
+class TestRecoverySkipsEarlyValidation:
+    """On restart, recovered positions must have _early_validation_done = True."""
+
+    @pytest.mark.asyncio
+    async def test_recovered_positions_skip_early_validation(self):
+        """recover_on_startup with existing positions should set _early_validation_done."""
+        from luckytrader.ws_monitor import WSMonitor
+
+        with patch('luckytrader.ws_monitor.StateManager.recover_on_startup') as mock_recover, \
+             patch('luckytrader.ws_monitor.WSMonitor._signal_handler'), \
+             patch('luckytrader.execute.get_position') as mock_get_pos, \
+             patch('luckytrader.ws_monitor.WebSocketManager.connect_with_retry', new_callable=AsyncMock, return_value=True), \
+             patch('luckytrader.ws_monitor.WebSocketManager.subscribe_all_coins', new_callable=AsyncMock), \
+             patch('luckytrader.ws_monitor.TradeExecutor.start_trailing_monitor', new_callable=AsyncMock):
+
+            mock_recover.return_value = {
+                "has_position": True,
+                "position": {"coin": "ETH", "direction": "SHORT", "size": 0.01, "entry_price": 1900},
+                "signal_history": [],
+                "last_run_time": None,
+            }
+            mock_get_pos.side_effect = lambda coin: (
+                {"coin": coin, "direction": "SHORT", "size": 0.01, "entry_price": 1900}
+                if coin == "ETH" else None
+            )
+
+            monitor = WSMonitor()
+            # Start but cancel quickly
+            task = asyncio.create_task(monitor.start())
+            await asyncio.sleep(0.1)
+            monitor.running = False
+            for t in monitor.tasks:
+                t.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+            # ETH should be marked as early validation done
+            assert monitor.trade_executor._early_validation_done.get("ETH") is True
+            # BTC has no position, should NOT be marked
+            assert "BTC" not in monitor.trade_executor._early_validation_done
