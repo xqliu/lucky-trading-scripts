@@ -5,7 +5,7 @@ Loads from config.toml + secrets from .okx_config
 """
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # --- Config search ---
@@ -47,10 +47,19 @@ class FeeConfig:
 
 
 @dataclass
+class ExecutionConfig:
+    # close_confirm_buffer: only enter when previous close is already outside BB,
+    # then enter with a small trend-direction buffer
+    mode: str = "close_confirm_buffer"
+    entry_buffer_pct: float = 0.001
+
+
+@dataclass
 class OKXConfig:
     strategy: StrategyConfig
     risk: RiskConfig
     fees: FeeConfig
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     # Exchange credentials (loaded from secrets)
     api_key: str = ""
     secret_key: str = ""
@@ -70,6 +79,7 @@ def load_config() -> OKXConfig:
     strategy = StrategyConfig()
     risk = RiskConfig()
     fees = FeeConfig()
+    execution = ExecutionConfig()
     raw = {}
 
     if toml_path.exists():
@@ -100,6 +110,12 @@ def load_config() -> OKXConfig:
                 taker_fee=fe.get("taker_fee", 0.0005),
                 maker_fee=fe.get("maker_fee", 0.0002),
             )
+        if "execution" in raw:
+            exu = raw["execution"]
+            execution = ExecutionConfig(
+                mode=exu.get("mode", "close_confirm_buffer"),
+                entry_buffer_pct=exu.get("entry_buffer_pct", 0.001),
+            )
 
     # Exchange settings
     coin = "ETH"
@@ -112,7 +128,7 @@ def load_config() -> OKXConfig:
     if "notifications" in raw:
         discord_channel_id = raw["notifications"].get("discord_channel_id", discord_channel_id)
 
-    cfg = OKXConfig(strategy=strategy, risk=risk, fees=fees,
+    cfg = OKXConfig(strategy=strategy, risk=risk, fees=fees, execution=execution,
                     coin=coin, instId=instId, discord_channel_id=discord_channel_id)
 
     # Load secrets
