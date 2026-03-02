@@ -828,15 +828,29 @@ class StateManager:
             "last_run_time": self.state.get("monitoring", {}).get("start_time")
         }
 
-        # 检查现有持仓（所有交易币种）
+        # 检查现有持仓（所有交易币种）— 链上为准，同步到本地 state
         try:
-            from luckytrader.execute import get_position
+            from luckytrader.execute import get_position, load_state, save_state
             for coin in TRADING_COINS:
                 position = get_position(coin)
                 if position:
                     recovery_info["has_position"] = True
                     recovery_info["position"] = position
                     logger.info(f"Recovered position: {position['direction']} {position['size']} {coin}")
+
+                    # 同步到本地 state（如果本地 state 丢失）
+                    local = load_state(coin)
+                    if not local.get("position"):
+                        logger.warning(f"Local state missing for {coin}, syncing from chain")
+                        save_state({
+                            "position": {
+                                "coin": coin,
+                                "direction": position["direction"],
+                                "size": abs(position["size"]),
+                                "entry_price": position["entry_price"],
+                                "entry_time": datetime.now(timezone.utc).isoformat(),
+                            }
+                        }, coin=coin)
         except Exception as e:
             logger.error(f"Position recovery failed: {e}")
 
