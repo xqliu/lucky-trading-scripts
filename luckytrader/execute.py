@@ -364,9 +364,16 @@ def _execute_inner(dry_run, mode, _CST, coin="BTC"):
         sl = sp.get("sl_price", 0)
         tp = sp.get("tp_price", 0)
         if sp["direction"] == "LONG":
-            reason = "TP" if current_price >= tp * 0.99 else "SL" if current_price <= sl * 1.01 else "UNKNOWN"
+            reason = "TP" if current_price >= tp * 0.99 else "SL" if current_price <= sl * 1.01 else None
         else:
-            reason = "TP" if current_price <= tp * 1.01 else "SL" if current_price >= sl * 0.99 else "UNKNOWN"
+            reason = "TP" if current_price <= tp * 1.01 else "SL" if current_price >= sl * 0.99 else None
+
+        if reason is None:
+            # Distance fallback (handles trailing stop moving SL to breakeven+)
+            dist_sl = abs(current_price - sl) if sl else float('inf')
+            dist_tp = abs(current_price - tp) if tp else float('inf')
+            reason = "SL" if dist_sl < dist_tp else "TP" if dist_tp < dist_sl else ("TP" if pnl_pct > 0 else "SL")
+            logger.info(f"Exit classified by distance fallback: {reason} (close={current_price}, sl={sl}, tp={tp})")
         
         record_trade_result(pnl_pct, sp["direction"], coin, reason)
         log_trade("CLOSED_BY_TRIGGER", coin, sp["direction"], sp["size"],

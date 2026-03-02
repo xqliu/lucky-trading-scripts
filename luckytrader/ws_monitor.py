@@ -467,15 +467,43 @@ class TradeExecutor:
 
             sl = sp.get("sl_price", 0)
             tp = sp.get("tp_price", 0)
+            # Classify exit reason: first try proximity check with 1% tolerance
             if sp["direction"] == "LONG":
-                reason = "TP" if close_price >= tp * 0.99 else "SL" if close_price <= sl * 1.01 else "UNKNOWN"
+                reason = "TP" if close_price >= tp * 0.99 else "SL" if close_price <= sl * 1.01 else None
             else:
-                reason = "TP" if close_price <= tp * 1.01 else "SL" if close_price >= sl * 0.99 else "UNKNOWN"
+                reason = "TP" if close_price <= tp * 1.01 else "SL" if close_price >= sl * 0.99 else None
+
+            if reason is None:
+                # Fallback: compare distance to SL vs TP; closer one wins
+                # Also handles trailing stop (SL moved to breakeven+)
+                dist_sl = abs(close_price - sl) if sl else float('inf')
+                dist_tp = abs(close_price - tp) if tp else float('inf')
+                if dist_sl < dist_tp:
+                    reason = "SL"
+                elif dist_tp < dist_sl:
+                    reason = "TP"
+                else:
+                    # PnL-based: positive = TP, negative/zero = SL
+                    reason = "TP" if pnl_pct > 0 else "SL"
+                logger.info(f"Exit classified by distance fallback: {reason} "
+                            f"(close={close_price}, sl={sl}, tp={tp}, dist_sl={dist_sl:.2f}, dist_tp={dist_tp:.2f})")
 
             await asyncio.to_thread(execute.record_trade_result, pnl_pct, sp["direction"], coin, reason)
             await asyncio.to_thread(execute.log_trade, "CLOSED_BY_TRIGGER", coin, sp["direction"], sp["size"],
                              close_price, None, None, f"{reason} 触发, PnL {pnl_pct:+.2f}%")
             await asyncio.to_thread(execute.save_state, {"position": None}, coin)
+
+            # Timestamps for notification
+            entry_time = sp.get("entry_time", "")
+            close_time = ""
+            if close_fill and close_fill.get("time"):
+                # Hyperliquid fills use epoch ms
+                try:
+                    close_ts = int(close_fill["time"]) / 1000
+                    from datetime import timezone as _tz
+                    close_time = datetime.fromtimestamp(close_ts, tz=_tz.utc).strftime("%Y-%m-%d %H:%M UTC")
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Failed to parse fill timestamp: {e}")
 
             return {
                 "action": "CLOSED_BY_TRIGGER",
@@ -485,6 +513,8 @@ class TradeExecutor:
                 "coin": coin,
                 "entry_price": entry,
                 "close_price": close_price,
+                "entry_time": entry_time,
+                "close_time": close_time,
             }
 
         except Exception as e:
@@ -656,6 +686,21 @@ class NotificationManager:
         self.notification_history = []  # [(timestamp, type, message), ...]
         self.notification_window = 60  # 1分钟去重窗口
 
+    @staticmethod
+    def _format_sgt(ts_str: Optional[str] = None) -> str:
+        """Format a timestamp (ISO string or None=now) as SGT string."""
+        from datetime import timezone as tz, timedelta as td
+        sgt = tz(td(hours=8))
+        if ts_str:
+            try:
+                dt = datetime.fromisoformat(str(ts_str))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=tz.utc)
+                return dt.astimezone(sgt).strftime("%Y-%m-%d %H:%M SGT")
+            except Exception:
+                return str(ts_str)
+        return datetime.now(tz.utc).astimezone(sgt).strftime("%Y-%m-%d %H:%M SGT")
+
     def notify_trade_opened(self, trade_info: Dict):
         """交易开仓通知"""
         message = f"🚀 **开仓** {trade_info['direction']} {trade_info.get('coin', 'BTC')}\n"
@@ -667,7 +712,8 @@ class NotificationManager:
             message += f"🛑 止损: ${trade_info['sl']:,.2f} (-{sl_pct:.0f}%) | "
             message += f"🎯 止盈: ${trade_info['tp']:,.2f} (+{tp_pct:.0f}%)\n"
 
-        message += f"⏰ 最长持仓: {self._config.risk.max_hold_hours}h"
+        message += f"⏰ 最长持仓: {self._config.risk.max_hold_hours}h\n"
+        message += f"🕐 开仓时间: {self._format_sgt()}"
 
         self._send_discord_message(message)
 
@@ -680,7 +726,13 @@ class NotificationManager:
 
         message = f"{emoji} **平仓** {close_info.get('direction', '')} {close_info.get('coin', 'BTC')} — {reason}触发\n"
         message += f"💰 入场: ${close_info.get('entry_price', 0):,.2f} → 平仓: ~${close_info.get('close_price', 0):,.2f}\n"
-        message += f"📊 盈亏: {pnl_pct:+.2f}%"
+        message += f"📊 盈亏: {pnl_pct:+.2f}%\n"
+
+        entry_time = close_info.get('entry_time')
+        close_time = close_info.get('close_time')
+        entry_time_str = self._format_sgt(entry_time) if entry_time else "未知"
+        exit_time_str = self._format_sgt(close_time) if close_time else self._format_sgt()
+        message += f"🕐 入场: {entry_time_str} → 出场: {exit_time_str}"
 
         self._send_discord_message(message)
 
