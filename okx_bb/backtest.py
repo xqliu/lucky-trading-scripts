@@ -187,10 +187,10 @@ def backtest_intrabar(candles: list, cfg: OKXConfig) -> List[Trade]:
 
         if trend == "up" and bar["h"] >= upper:
             signal = "LONG"
-            entry_price = upper * 1.001  # trigger limit +0.1% buffer (matches ws_monitor)
+            entry_price = upper  # trigger fires at BB boundary, fills at ~triggerPx
         elif trend == "down" and bar["l"] <= lower:
             signal = "SHORT"
-            entry_price = lower * 0.999  # trigger limit -0.1% buffer (matches ws_monitor)
+            entry_price = lower  # orderPx buffer is just fill ceiling, not actual price
 
         if signal and entry_price:
             trade = simulate_trade(candles, idx, signal, entry_price,
