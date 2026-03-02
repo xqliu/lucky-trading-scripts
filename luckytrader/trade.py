@@ -29,6 +29,9 @@ MAIN_WALLET = None
 API_WALLET = None
 API_PRIVATE_KEY = None
 
+import logging
+logger = logging.getLogger(__name__)
+
 try:
     _c = load_secrets()
     MAIN_WALLET = _c["MAIN_WALLET"]
@@ -36,8 +39,7 @@ try:
     API_PRIVATE_KEY = _c["API_PRIVATE_KEY"]
 except (FileNotFoundError, ValueError) as e:
     # Allow import without config for testing/CI
-    import logging as _logging
-    _logging.getLogger(__name__).debug(f"Config not loaded (OK for testing): {e}")
+    logger.debug(f"Config not loaded (OK for testing): {e}")
 
 def get_account_info():
     """Get account balance and positions"""
@@ -84,7 +86,9 @@ def place_order(coin: str, is_buy: bool, size: float, price: float, reduce_only:
     account = Account.from_key(API_PRIVATE_KEY)
     exchange = Exchange(account, constants.MAINNET_API_URL, account_address=MAIN_WALLET)
     
-    return _retry_on_429(lambda: exchange.order(
+    side = "BUY" if is_buy else "SELL"
+    logger.info(f"ORDER limit {side} {coin} sz={size} px={price} reduceOnly={reduce_only}")
+    result = _retry_on_429(lambda: exchange.order(
         coin,
         is_buy,
         size,
@@ -92,6 +96,8 @@ def place_order(coin: str, is_buy: bool, size: float, price: float, reduce_only:
         {"limit": {"tif": "Gtc"}},
         reduce_only=reduce_only
     ))
+    logger.info(f"ORDER limit result {coin}: {result}")
+    return result
 
 def place_market_order(coin: str, is_buy: bool, size: float):
     """Place a market order"""
@@ -106,19 +112,26 @@ def place_market_order(coin: str, is_buy: bool, size: float):
     else:
         price = round(current_price * (1 - slippage))
     
-    return _retry_on_429(lambda: exchange.order(
+    side = "BUY" if is_buy else "SELL"
+    logger.info(f"ORDER market {side} {coin} sz={size} px={price} (current={current_price})")
+    result = _retry_on_429(lambda: exchange.order(
         coin,
         is_buy,
         size,
         price,
-        {"limit": {"tif": "Ioc"}}  # Immediate or cancel for market-like behavior
+        {"limit": {"tif": "Ioc"}}
     ))
+    logger.info(f"ORDER result {coin}: {result}")
+    return result
 
 def cancel_order(coin: str, oid: int):
     """Cancel an order"""
+    logger.info(f"CANCEL {coin} oid={oid}")
     account = Account.from_key(API_PRIVATE_KEY)
     exchange = Exchange(account, constants.MAINNET_API_URL, account_address=MAIN_WALLET)
-    return _retry_on_429(lambda: exchange.cancel(coin, oid))
+    result = _retry_on_429(lambda: exchange.cancel(coin, oid))
+    logger.info(f"CANCEL result {coin}: {result}")
+    return result
 
 def place_stop_loss(coin: str, size: float, trigger_price: float, is_long: bool = True):
     """Place a stop loss order (trigger order)
@@ -142,14 +155,18 @@ def place_stop_loss(coin: str, size: float, trigger_price: float, is_long: bool 
     # For a short position, stop loss is a buy order triggered when price rises
     is_buy = not is_long
     
-    return _retry_on_429(lambda: exchange.order(
+    side = "BUY" if is_buy else "SELL"
+    logger.info(f"ALGO SL {side} {coin} sz={size} triggerPx={trigger_price} is_long={is_long}")
+    result = _retry_on_429(lambda: exchange.order(
         coin,
         is_buy,
         size,
-        trigger_price,  # Use trigger price as limit price for market-like execution
+        trigger_price,
         {"trigger": {"triggerPx": trigger_price, "isMarket": True, "tpsl": "sl"}},
         reduce_only=True
     ))
+    logger.info(f"ALGO SL result {coin}: {result}")
+    return result
 
 def place_take_profit(coin: str, size: float, trigger_price: float, is_long: bool = True):
     """Place a take profit order (trigger order)
@@ -173,7 +190,9 @@ def place_take_profit(coin: str, size: float, trigger_price: float, is_long: boo
     # For a short position, take profit is a buy order triggered when price drops
     is_buy = not is_long
     
-    return _retry_on_429(lambda: exchange.order(
+    side = "BUY" if is_buy else "SELL"
+    logger.info(f"ALGO TP {side} {coin} sz={size} triggerPx={trigger_price} is_long={is_long}")
+    result = _retry_on_429(lambda: exchange.order(
         coin,
         is_buy,
         size,
@@ -181,6 +200,8 @@ def place_take_profit(coin: str, size: float, trigger_price: float, is_long: boo
         {"trigger": {"triggerPx": trigger_price, "isMarket": True, "tpsl": "tp"}},
         reduce_only=True
     ))
+    logger.info(f"ALGO TP result {coin}: {result}")
+    return result
 
 def get_open_orders():
     """Get open orders (basic info only)"""
