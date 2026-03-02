@@ -121,8 +121,15 @@ def _block_real_side_effects():
             f"Add @patch to mock the network call."
         )
 
+    # Isolate ALL state files to prevent production pollution
+    import tempfile
+    _test_state_dir = Path(tempfile.mkdtemp())
+    _test_state_dir.mkdir(exist_ok=True)
+
     with patch('luckytrader.execute.notify_discord') as _mock_nd, \
          patch('luckytrader.execute.trigger_optimization') as _mock_to, \
+         patch('luckytrader.execute.STATE_FILE', _test_state_dir / "position_state.json"), \
+         patch('luckytrader.trailing.STATE_FILE', _test_state_dir / "trailing_state.json"), \
          patch('time.sleep') as _mock_sleep, \
          patch.object(_socket.socket, 'connect', _blocked_connect):
         yield {"notify_discord": _mock_nd, "trigger_optimization": _mock_to,
