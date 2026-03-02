@@ -199,8 +199,12 @@ def backtest_intrabar(candles: list, cfg: OKXConfig) -> List[Trade]:
 
 # === Reporting ===
 
-def report(name: str, trades: List[Trade], candles: list):
-    """Print backtest statistics."""
+def report(name: str, trades: List[Trade], candles: list, leverage: int = 1):
+    """Print backtest statistics.
+
+    Args:
+        leverage: Position leverage multiplier. PnL per trade is scaled by this.
+    """
     if not trades:
         print(f"\n{'='*50}")
         print(f"  {name}: 0 trades")
@@ -210,10 +214,10 @@ def report(name: str, trades: List[Trade], candles: list):
     losses = [t for t in trades if t.pnl <= 0]
     win_rate = len(wins) / len(trades) * 100
 
-    # Equity curve (compounded) for return and MDD
+    # Equity curve (compounded) — apply leverage to each trade's PnL
     equity = [1.0]
     for t in trades:
-        equity.append(equity[-1] * (1 + t.pnl))
+        equity.append(equity[-1] * (1 + t.pnl * leverage))
     compounded_return = equity[-1] - 1  # This is the REAL return
 
     peak = equity[0]
@@ -250,10 +254,10 @@ def report(name: str, trades: List[Trade], candles: list):
     days = (candles[-1]["ts"] - candles[0]["ts"]) / 86400000
 
     print(f"\n{'='*60}")
-    print(f"  {name}")
+    print(f"  {name}  [{leverage}x leverage]")
     print(f"{'='*60}")
     print(f"  Period: {days:.0f} days | Trades: {len(trades)}")
-    print(f"  Return: {compounded_return*100:+.1f}% (compounded)")
+    print(f"  Return: {compounded_return*100:+.1f}% (compounded, {leverage}x)")
     print(f"  $100 → ${100 * equity[-1]:.2f}")
     print(f"  Win rate: {win_rate:.1f}% | PF: {pf:.2f}")
     print(f"  Max DD: {max_dd*100:.1f}%")
@@ -384,16 +388,17 @@ def main():
 
     print(f"\nConfig: BB({cfg.strategy.bb_period}, {cfg.strategy.bb_multiplier}) "
           f"EMA({cfg.strategy.trend_ema_period}, lookback={cfg.strategy.trend_lookback})")
+    lev = cfg.risk.leverage
     print(f"Risk: TP={cfg.risk.take_profit_pct*100}% SL={cfg.risk.stop_loss_pct*100}% "
-          f"MaxHold={cfg.risk.max_hold_bars} bars")
+          f"MaxHold={cfg.risk.max_hold_bars} bars  Leverage={lev}x")
     print(f"Fee: {cfg.fees.taker_fee*2*100:.2f}% round-trip")
 
     # Run both modes
     close_trades = backtest_close(candles, cfg)
     intrabar_trades = backtest_intrabar(candles, cfg)
 
-    r1 = report("CLOSE (detect_signal)", close_trades, candles)
-    r2 = report("INTRABAR (ws_monitor trigger)", intrabar_trades, candles)
+    r1 = report("CLOSE (detect_signal)", close_trades, candles, leverage=lev)
+    r2 = report("INTRABAR (ws_monitor trigger)", intrabar_trades, candles, leverage=lev)
 
     if r1 and r2:
         print(f"\nIntrabar vs Close: ${r2['final_equity']:.0f} vs ${r1['final_equity']:.0f} "
