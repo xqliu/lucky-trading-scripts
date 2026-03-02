@@ -754,13 +754,17 @@ class NotificationManager:
             openclaw_path = shutil.which("openclaw") or str(Path.home() / ".local/bin/openclaw")
 
             cmd = [
-                openclaw_path, "system", "event", "--text",
-                f"发送以下消息到 Discord #投资 (channelId: {self.discord_channel_id}):\n\n{full_message}",
-                "--mode", "now"
+                openclaw_path, "message", "send",
+                "--channel", "discord",
+                "--target", self.discord_channel_id,
+                "--message", full_message,
             ]
 
-            subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            logger.info("Discord notification sent")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                logger.info("Discord notification sent")
+            else:
+                logger.error(f"Discord send failed: {result.stderr}")
 
         except Exception as e:
             logger.error(f"Discord notification failed: {e}")
