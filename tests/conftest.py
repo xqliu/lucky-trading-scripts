@@ -142,7 +142,9 @@ def _block_real_side_effects():
          patch('luckytrader.execute.STATE_FILE', _test_state_dir / "position_state.json"), \
          patch('luckytrader.execute.TRADE_LOG_FILE', _test_state_dir / "trade_results.json"), \
          patch('luckytrader.execute.TRADES_FILE', _test_state_dir / "TRADES.md"), \
+         patch('luckytrader.execute._LOCK_DIR', _test_state_dir), \
          patch('luckytrader.trailing.STATE_FILE', _test_state_dir / "trailing_state.json"), \
+         patch('luckytrader.ws_monitor.get_workspace_dir', return_value=_test_state_dir), \
          patch('time.sleep') as _mock_sleep, \
          patch.object(_socket.socket, 'connect', _blocked_connect):
         yield {"notify_discord": _mock_nd, "trigger_optimization": _mock_to,
