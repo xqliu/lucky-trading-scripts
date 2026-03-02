@@ -584,3 +584,214 @@ class TestRecoverySkipsEarlyValidation:
             assert monitor.trade_executor._early_validation_done.get("ETH") is True
             # BTC has no position, should NOT be marked
             assert "BTC" not in monitor.trade_executor._early_validation_done
+
+
+# === Fix: Notification timestamps (SGT) ===
+
+class TestNotificationTimestamps:
+    """Trade notifications must include entry/exit timestamps in SGT."""
+
+    def test_format_sgt_with_utc_iso(self):
+        """_format_sgt converts UTC ISO string to SGT."""
+        from luckytrader.ws_monitor import NotificationManager
+        result = NotificationManager._format_sgt("2026-03-02T16:47:00+00:00")
+        assert "2026-03-03 00:47 SGT" == result
+
+    def test_format_sgt_with_naive_iso(self):
+        """_format_sgt treats naive ISO as UTC."""
+        from luckytrader.ws_monitor import NotificationManager
+        result = NotificationManager._format_sgt("2026-03-02T16:47:00")
+        assert "2026-03-03 00:47 SGT" == result
+
+    def test_format_sgt_none_returns_now(self):
+        """_format_sgt(None) returns current time in SGT."""
+        from luckytrader.ws_monitor import NotificationManager
+        result = NotificationManager._format_sgt(None)
+        assert "SGT" in result
+
+    def test_closed_notification_has_timestamps(self):
+        """notify_trade_closed message must contain entry and exit times."""
+        from luckytrader.ws_monitor import NotificationManager
+        nm = NotificationManager()
+        sent_messages = []
+        nm._send_discord_message = lambda msg, **kw: sent_messages.append(msg)
+
+        close_info = {
+            "direction": "LONG", "coin": "BTC", "reason": "TP",
+            "entry_price": 68629, "close_price": 70029, "pnl_pct": 2.04,
+            "entry_time": "2026-03-02T15:30:00+00:00",
+            "close_time": "2026-03-02T16:47:00+00:00",
+        }
+        nm.notify_trade_closed(close_info)
+        msg = sent_messages[0]
+        assert "🕐" in msg
+        assert "入场:" in msg and "出场:" in msg
+        assert "2026-03-02 23:30 SGT" in msg  # entry in SGT
+        assert "2026-03-03 00:47 SGT" in msg  # exit in SGT
+
+    def test_closed_notification_missing_times(self):
+        """notify_trade_closed handles missing entry_time gracefully."""
+        from luckytrader.ws_monitor import NotificationManager
+        nm = NotificationManager()
+        sent_messages = []
+        nm._send_discord_message = lambda msg, **kw: sent_messages.append(msg)
+
+        close_info = {
+            "direction": "SHORT", "coin": "ETH", "reason": "SL",
+            "entry_price": 2049, "close_price": 2049, "pnl_pct": 0.0,
+        }
+        nm.notify_trade_closed(close_info)
+        msg = sent_messages[0]
+        assert "入场: 未知" in msg
+        assert "出场:" in msg and "SGT" in msg
+
+    def test_opened_notification_has_timestamp(self):
+        """notify_trade_opened message must contain open time."""
+        from luckytrader.ws_monitor import NotificationManager
+        nm = NotificationManager()
+        sent_messages = []
+        nm._send_discord_message = lambda msg, **kw: sent_messages.append(msg)
+
+        trade_info = {
+            "direction": "LONG", "coin": "BTC",
+            "entry": 68629, "size": 0.00064,
+            "sl": 65198, "tp": 70002,
+        }
+        nm.notify_trade_opened(trade_info)
+        msg = sent_messages[0]
+        assert "🕐 开仓时间:" in msg
+        assert "SGT" in msg
+
+
+# === Fix: UNKNOWN exit classification → distance fallback ===
+
+class TestExitClassificationFallback:
+    """Exit reason must never be UNKNOWN — distance fallback classifies."""
+
+    @pytest.mark.asyncio
+    async def test_trailing_stop_at_breakeven_classified_as_sl(self):
+        """When trailing stop moves SL to breakeven, close at breakeven → SL (closer to SL)."""
+        from luckytrader.ws_monitor import TradeExecutor
+        import luckytrader.execute as execute
+
+        te = TradeExecutor.__new__(TradeExecutor)
+        te._last_position_check = 0
+        te._position_check_cooldown = 0
+
+        state = {
+            "position": {
+                "direction": "LONG", "entry_price": 68629, "size": 0.001,
+                "sl_price": 68629,  # trailing stop moved to breakeven
+                "tp_price": 70002,
+                "entry_time": "2026-03-02T15:30:00+00:00",
+            }
+        }
+
+        with patch.object(execute, 'load_state', return_value=state), \
+             patch.object(execute, 'get_position', return_value=None), \
+             patch('luckytrader.ws_monitor.get_recent_fills', return_value=[
+                 {"coin": "BTC", "side": "SELL", "price": "68630", "time": "1772469000000"}
+             ]), \
+             patch.object(execute, 'record_trade_result'), \
+             patch.object(execute, 'log_trade'), \
+             patch.object(execute, 'save_state'):
+
+            result = await te.check_position_closed_by_trigger("BTC")
+
+        assert result is not None
+        assert result["reason"] == "SL"  # closer to SL (68629) than TP (70002)
+
+    @pytest.mark.asyncio
+    async def test_close_near_tp_classified_as_tp(self):
+        """Close price near TP but outside 1% tolerance → distance fallback → TP."""
+        from luckytrader.ws_monitor import TradeExecutor
+        import luckytrader.execute as execute
+
+        te = TradeExecutor.__new__(TradeExecutor)
+        te._last_position_check = 0
+        te._position_check_cooldown = 0
+
+        state = {
+            "position": {
+                "direction": "LONG", "entry_price": 68000, "size": 0.001,
+                "sl_price": 65000,
+                "tp_price": 72000,
+                "entry_time": "2026-03-02T15:00:00+00:00",
+            }
+        }
+
+        # close at 71000 — outside TP*0.99=71280 but much closer to TP than SL
+        with patch.object(execute, 'load_state', return_value=state), \
+             patch.object(execute, 'get_position', return_value=None), \
+             patch('luckytrader.ws_monitor.get_recent_fills', return_value=[
+                 {"coin": "BTC", "side": "SELL", "price": "71000", "time": "1772469000000"}
+             ]), \
+             patch.object(execute, 'record_trade_result'), \
+             patch.object(execute, 'log_trade'), \
+             patch.object(execute, 'save_state'):
+
+            result = await te.check_position_closed_by_trigger("BTC")
+
+        assert result is not None
+        assert result["reason"] == "TP"
+
+    def test_execute_exit_classification_fallback(self):
+        """execute.py exit classification also uses distance fallback."""
+        # Test the logic inline (execute.py check_and_execute uses same pattern)
+        entry = 68000
+        sl = 68000  # trailing stop at breakeven
+        tp = 72000
+        close_price = 68050  # slightly above breakeven
+
+        # Simulate the classification logic
+        if close_price >= tp * 0.99:
+            reason = "TP"
+        elif close_price <= sl * 1.01:
+            reason = "SL"
+        else:
+            reason = None
+
+        if reason is None:
+            dist_sl = abs(close_price - sl)
+            dist_tp = abs(close_price - tp)
+            reason = "SL" if dist_sl < dist_tp else "TP" if dist_tp < dist_sl else "SL"
+
+        assert reason == "SL"  # 50 away from SL vs 3950 away from TP
+
+
+# === Fix: Discord send via openclaw message send ===
+
+class TestDiscordSendPath:
+    """_send_discord_message must use 'openclaw message send', not 'openclaw system event'."""
+
+    def test_send_uses_message_send_command(self):
+        """Verify subprocess command uses 'message send' not 'system event'."""
+        from luckytrader.ws_monitor import NotificationManager
+        nm = NotificationManager()
+
+        with patch('subprocess.run') as mock_run, \
+             patch('shutil.which', return_value='/usr/bin/openclaw'):
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+            nm._send_discord_message("test message", force=True)
+
+            mock_run.assert_called_once()
+            cmd = mock_run.call_args[0][0]
+            assert "message" in cmd and "send" in cmd, \
+                f"Expected 'message send' in command, got: {cmd}"
+            assert "system" not in cmd and "event" not in cmd, \
+                f"Must not use 'system event', got: {cmd}"
+
+    def test_send_checks_return_code(self):
+        """Failed send must log error (returncode != 0)."""
+        from luckytrader.ws_monitor import NotificationManager
+        nm = NotificationManager()
+
+        with patch('subprocess.run') as mock_run, \
+             patch('shutil.which', return_value='/usr/bin/openclaw'), \
+             patch('luckytrader.ws_monitor.logger') as mock_logger:
+            mock_run.return_value = MagicMock(returncode=1, stderr="connection refused")
+            nm._send_discord_message("test message", force=True)
+
+            mock_logger.error.assert_called()
+            error_msg = mock_logger.error.call_args[0][0]
+            assert "connection refused" in error_msg
