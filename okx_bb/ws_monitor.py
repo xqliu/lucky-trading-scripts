@@ -801,8 +801,46 @@ class WSMonitor:
                     await self._atomic_cancel_and_place()
                     continue
 
+                # SL health check — verify SL exists on exchange when we have a position
+                local_pos = self.executor.load_position()
+                if local_pos and not self._entry_in_progress:
+                    algos = await self._rest_exchange("get_algo_orders", self.cfg.instId, "conditional")
+                    has_sl = any(a.get("slTriggerPx") for a in (algos or []))
+                    if not has_sl:
+                        logger.error("PERIODIC: Position has NO SL on exchange! Re-setting...")
+                        d = local_pos.get("direction", "SHORT")
+                        ap = local_pos.get("entry_price", 0)
+                        sz = local_pos.get("size", "0")
+                        close_side = "sell" if d == "LONG" else "buy"
+                        if d == "LONG":
+                            sl_p = ap * (1 - self.cfg.risk.stop_loss_pct)
+                            tp_p = ap * (1 + self.cfg.risk.take_profit_pct)
+                        else:
+                            sl_p = ap * (1 + self.cfg.risk.stop_loss_pct)
+                            tp_p = ap * (1 - self.cfg.risk.take_profit_pct)
+
+                        sl_result = await self._rest_exchange(
+                            "place_stop_order", self.cfg.instId, close_side, sz,
+                            slTriggerPx=f"{sl_p:.2f}")
+
+                        if sl_result and sl_result.get("code") == "0" and sl_result.get("data"):
+                            sl_algo_id = sl_result["data"][0].get("algoId", "")
+                            local_pos["sl_algo_id"] = sl_algo_id
+                            self.executor.save_position(local_pos)
+                            logger.info(f"SL re-set OK: algoId={sl_algo_id} triggerPx={sl_p:.2f}")
+                            send_discord(f"{MSG_PREFIX}⚠️ 定期检查发现 SL 丢失 → 已重设\n"
+                                         f"SL: ${sl_p:.2f}", mention=True)
+                        else:
+                            logger.error(f"SL re-set FAILED: {sl_result} — EMERGENCY CLOSE!")
+                            await self._rest_exchange("place_market_order",
+                                self.cfg.instId, close_side, sz, True)
+                            send_discord(f"{MSG_PREFIX}🚨 SL 丢失且重设失败 → 紧急平仓", mention=True)
+                            self.executor.save_position(None)
+                            await self._atomic_cancel_and_place()
+                            continue
+
                 # Orphan detection (only if no local position AND no entry in progress)
-                if not self.executor.load_position() and not self._entry_in_progress:
+                if not local_pos and not self._entry_in_progress:
                     positions = await self._rest_exchange("get_positions", self.cfg.instId)
                     if positions and any(float(p.get("pos", 0)) != 0 for p in positions):
                         # Double-check entry_in_progress (could have changed)
