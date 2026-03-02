@@ -129,6 +129,8 @@ def _block_real_side_effects():
     with patch('luckytrader.execute.notify_discord') as _mock_nd, \
          patch('luckytrader.execute.trigger_optimization') as _mock_to, \
          patch('luckytrader.execute.STATE_FILE', _test_state_dir / "position_state.json"), \
+         patch('luckytrader.execute.TRADE_LOG_FILE', _test_state_dir / "trade_results.json"), \
+         patch('luckytrader.execute.TRADES_FILE', _test_state_dir / "TRADES.md"), \
          patch('luckytrader.trailing.STATE_FILE', _test_state_dir / "trailing_state.json"), \
          patch('time.sleep') as _mock_sleep, \
          patch.object(_socket.socket, 'connect', _blocked_connect):
