@@ -1097,11 +1097,6 @@ class WSMonitor:
         self._load_pending()
         self._running = True
 
-        # Set leverage once at startup (before any algo orders exist)
-        lev_result = await self._rest_exchange("set_leverage", self.cfg.instId, str(self.cfg.risk.leverage), "isolated")
-        if isinstance(lev_result, dict) and lev_result.get("code") != "0":
-            logger.warning(f"set_leverage result: {lev_result.get('msg', lev_result)}")
-
         for s in (sig.SIGINT, sig.SIGTERM):
             self._loop.add_signal_handler(s, self._shutdown)
 
@@ -1109,8 +1104,13 @@ class WSMonitor:
         await self._connect_business()
         await self._connect_private()
 
-        # Reconcile with exchange
+        # Reconcile with exchange (cancels stale triggers in close-confirm mode)
         await self._reconcile_on_startup()
+
+        # Set leverage AFTER reconciliation (stale algo orders cleared first)
+        lev_result = await self._rest_exchange("set_leverage", self.cfg.instId, str(self.cfg.risk.leverage), "isolated")
+        if isinstance(lev_result, dict) and lev_result.get("code") != "0":
+            logger.warning(f"set_leverage result: {lev_result.get('msg', lev_result)}")
 
         # Initial order placement (only for intrabar trigger mode)
         if not self.executor.load_position():
