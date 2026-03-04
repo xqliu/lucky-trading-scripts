@@ -264,7 +264,20 @@ class WSMonitor:
                 if not had_local_state:
                     send_discord(f"{MSG_PREFIX}⚠️ 启动恢复仓位: {direction} @ ${avg_px:.2f}")
 
-        # 2. Validate pending orders (check BOTH conditional and trigger types)
+        # 2. In close-confirm mode, cancel ALL trigger orders (we don't use them)
+        if self.cfg.execution.mode == "close_confirm_buffer":
+            algos_trigger = await self._rest_exchange("get_algo_orders", self.cfg.instId, "trigger")
+            for a in (algos_trigger or []):
+                try:
+                    await self._rest_exchange("cancel_algo_order", a["algoId"], self.cfg.instId)
+                    logger.info(f"Cancelled stale trigger {a['algoId']} (close-confirm mode)")
+                except Exception as e:
+                    logger.debug(f"Cancel trigger {a.get('algoId')}: {e}")
+            self._pending_long_algoId = None
+            self._pending_short_algoId = None
+            self._save_pending()
+
+        # 3. Validate pending orders (intrabar trigger mode only)
         if self._pending_long_algoId or self._pending_short_algoId:
             algos_trigger = await self._rest_exchange("get_algo_orders", self.cfg.instId, "trigger")
             algos_cond2 = await self._rest_exchange("get_algo_orders", self.cfg.instId, "conditional")
