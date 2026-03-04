@@ -811,7 +811,8 @@ class WSMonitor:
                     f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
                     f"PnL: {result.pnl_pct*100:+.2f}%",
                     mention=True)
-                await self._atomic_cancel_and_place()
+                if self.cfg.execution.mode != "close_confirm_buffer":
+                    await self._atomic_cancel_and_place()
         except Exception as e:
             logger.error(f"check error: {e}", exc_info=True)
 
@@ -874,7 +875,8 @@ class WSMonitor:
                         f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
                         f"PnL: {result.pnl_pct*100:+.2f}%",
                         mention=True)
-                    await self._atomic_cancel_and_place()
+                    if self.cfg.execution.mode != "close_confirm_buffer":
+                        await self._atomic_cancel_and_place()
                     continue
 
                 # SL health check — verify SL exists on exchange when we have a position
@@ -912,7 +914,8 @@ class WSMonitor:
                                 self.cfg.instId, close_side, sz, True)
                             send_discord(f"{MSG_PREFIX}🚨 SL 丢失且重设失败 → 紧急平仓", mention=True)
                             self.executor.save_position(None)
-                            await self._atomic_cancel_and_place()
+                            if self.cfg.execution.mode != "close_confirm_buffer":
+                                await self._atomic_cancel_and_place()
                             continue
 
                 # Orphan detection (only if no local position AND no entry in progress)
@@ -993,10 +996,11 @@ class WSMonitor:
                                 "entry_bar_count": 0,
                             })
 
-                # Ensure pending orders exist if no position
-                if not self.executor.load_position():
-                    if not self._pending_long_algoId and not self._pending_short_algoId:
-                        await self._atomic_cancel_and_place()
+                # Ensure pending orders exist if no position (intrabar trigger mode only)
+                if self.cfg.execution.mode != "close_confirm_buffer":
+                    if not self.executor.load_position():
+                        if not self._pending_long_algoId and not self._pending_short_algoId:
+                            await self._atomic_cancel_and_place()
 
             except Exception as e:
                 logger.error(f"Periodic error: {e}", exc_info=True)
@@ -1095,9 +1099,11 @@ class WSMonitor:
         # Reconcile with exchange
         await self._reconcile_on_startup()
 
-        # Initial order placement
+        # Initial order placement (only for intrabar trigger mode)
         if not self.executor.load_position():
-            if not self._pending_long_algoId and not self._pending_short_algoId:
+            if self.cfg.execution.mode == "close_confirm_buffer":
+                logger.info("Close-confirm mode: waiting for next candle close to evaluate entry")
+            elif not self._pending_long_algoId and not self._pending_short_algoId:
                 await self._atomic_cancel_and_place()
 
         # Get last commit info for version tracking
