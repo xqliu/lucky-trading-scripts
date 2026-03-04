@@ -703,7 +703,7 @@ class WSMonitor:
     # === Trading Logic ===
 
     async def _on_candle_close(self):
-        """Candle confirmed → atomic cancel+check+place."""
+        """Candle confirmed → check position → place orders or enter."""
         # Check position timeout first
         try:
             result = await self._rest(self.executor.check_position)
@@ -718,9 +718,85 @@ class WSMonitor:
         except Exception as e:
             logger.error(f"check_position error: {e}", exc_info=True)
 
-        # Atomic: cancel old → verify no position → place new
         if not self.executor.load_position():
-            await self._atomic_cancel_and_place()
+            if self.cfg.execution.mode == "close_confirm_buffer":
+                await self._close_confirm_entry()
+            else:
+                await self._atomic_cancel_and_place()
+
+    async def _close_confirm_entry(self):
+        """Close-confirm mode: enter on candle close when prev close is outside BB.
+
+        No trigger orders — market order entry when conditions are met.
+        """
+        async with self._order_lock:
+            if self._triggered_direction or self._entry_in_progress:
+                return
+
+            if not self.accumulator.ready:
+                return
+
+            closes = self.accumulator.closes
+            idx = len(closes) - 1
+            bb = get_bb_levels(closes, self.cfg.strategy.bb_period,
+                               self.cfg.strategy.bb_multiplier, idx)
+            if bb is None:
+                return
+
+            mid, upper, lower = bb
+            trend = self._get_trend()
+            prev_close = closes[-1]  # This IS the just-closed candle's close
+            buffer = self.cfg.execution.entry_buffer_pct
+
+            logger.info(f"CC check: prev_close={prev_close:.2f} upper={upper:.2f} "
+                        f"lower={lower:.2f} trend={trend} buffer={buffer}")
+
+            direction = None
+            if trend == "up" and prev_close > upper * (1 + buffer):
+                direction = "buy"
+            elif trend == "down" and prev_close < lower * (1 - buffer):
+                direction = "sell"
+
+            if not direction:
+                return
+
+            # Verify no position on exchange
+            positions = await self._rest_exchange("get_positions", self.cfg.instId)
+            if positions is None:
+                logger.warning("Can't verify positions, skipping entry")
+                return
+            if any(float(p.get("pos", 0)) != 0 for p in positions):
+                return
+
+            sz = await self._rest(self.executor.calculate_size)
+            if not sz:
+                return
+
+            dir_label = "LONG" if direction == "buy" else "SHORT"
+            logger.info(f"📊 Close-confirm signal: {dir_label} @ prev_close={prev_close:.2f}")
+
+            # Market order entry
+            result = await self._rest_exchange(
+                "place_market_order", self.cfg.instId, direction, sz)
+
+            if result.get("code") == "0" and result.get("data"):
+                ord_id = result["data"][0].get("ordId", "")
+                logger.info(f"Market order placed: {direction} sz={sz} ordId={ord_id}")
+                # Wait for fill then process
+                await asyncio.sleep(2)
+                # Check fill
+                positions = await self._rest_exchange("get_positions", self.cfg.instId)
+                if positions and any(float(p.get("pos", 0)) != 0 for p in positions):
+                    pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
+                    fill_price = float(pos_info.get("avgPx", prev_close))
+                    fill_sz = f"{abs(float(pos_info.get('pos', 0))):.2f}"
+                    await self._on_entry_filled(dir_label, fill_price, fill_sz)
+                else:
+                    logger.error(f"Market order sent but no position found! ordId={ord_id}")
+                    send_discord(f"{MSG_PREFIX}⚠️ 市价单发出但未检测到持仓 ordId={ord_id}", mention=True)
+            else:
+                logger.error(f"Market order failed: {result}")
+                send_discord(f"{MSG_PREFIX}⚠️ 市价开仓失败: {result}", mention=True)
 
     async def _check_position_closed(self):
         """Check if SL/TP hit. If position closed, place new triggers."""
