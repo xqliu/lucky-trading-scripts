@@ -230,13 +230,15 @@ class WSMonitor:
                         px=f"{tp_p:.2f}", reduceOnly=True)
                     tp_id = tp_result.get("data", [{}])[0].get("ordId", "") if tp_result.get("code") == "0" else ""
 
-                    self.executor.save_position({
+                    pos_state = {
                         "direction": direction, "entry_price": avg_px,
                         "size": f"{pos_size:.2f}", "sl_price": sl_p, "tp_price": tp_p,
                         "sl_algo_id": sl_algo_id, "tp_order_id": tp_id,
                         "entry_time": datetime.now(timezone.utc).isoformat(),
                         "entry_bar_count": 0,
-                    })
+                    }
+                    self.executor.save_position(pos_state)
+                    self.executor._append_open_trade_log_if_missing(pos_state, source="startup_reconcile_reset_sl")
                     send_discord(f"{MSG_PREFIX}⚠️ 启动发现裸仓 → 已重设SL/TP\n"
                                  f"{direction} {pos_size} @ ${avg_px:.2f}\n"
                                  f"SL: ${sl_p:.2f} / TP: ${tp_p:.2f}", mention=True)
@@ -253,13 +255,7 @@ class WSMonitor:
                 open_ords = await self._rest_exchange("get_open_orders", self.cfg.instId)
                 tp_id = next((o["ordId"] for o in open_ords if o.get("reduceOnly") == "true"), "")
 
-                self.executor.save_position({
-                    "direction": direction, "entry_price": avg_px,
-                    "size": f"{pos_size:.2f}", "sl_price": sl_p, "tp_price": tp_p,
-                    "sl_algo_id": sl_id, "tp_order_id": tp_id,
-                    "entry_time": datetime.now(timezone.utc).isoformat(),
-                    "entry_bar_count": 0,
-                })
+                self.executor.reconcile_position_from_exchange(source="startup_reconcile")
                 logger.info(f"Position has SL — state synced")
                 if not had_local_state:
                     send_discord(f"{MSG_PREFIX}⚠️ 启动恢复仓位: {direction} @ ${avg_px:.2f}")
@@ -549,14 +545,16 @@ class WSMonitor:
             logger.error(f"TP failed (SL active): {tp_result}")
             send_discord(f"{MSG_PREFIX}⚠️ TP设置失败，仅有SL保护")
 
-        # Save position state
-        self.executor.save_position({
+        # Save position state + ensure OPEN trade log stays in sync
+        pos_state = {
             "direction": direction, "entry_price": fill_price,
             "size": actual_sz, "sl_price": sl_price, "tp_price": tp_price,
             "sl_algo_id": sl_algo_id, "tp_order_id": tp_ord_id,
             "entry_time": datetime.now(timezone.utc).isoformat(),
             "entry_bar_count": 0,
-        })
+        }
+        self.executor.save_position(pos_state)
+        self.executor._append_open_trade_log_if_missing(pos_state, source="entry_fill")
 
         send_discord(
             f"{MSG_PREFIX}📊 OKX BB: {direction} {self.cfg.coin}\n"
@@ -975,13 +973,15 @@ class WSMonitor:
                                     px=f"{tp_p:.2f}", reduceOnly=True)
                                 tp_id = tp_result.get("data", [{}])[0].get("ordId", "") if tp_result.get("code") == "0" else ""
 
-                                self.executor.save_position({
+                                pos_state = {
                                     "direction": d, "entry_price": ap,
                                     "size": f"{pos_size:.2f}", "sl_price": sl_p, "tp_price": tp_p,
                                     "sl_algo_id": sl_algo_id, "tp_order_id": tp_id,
                                     "entry_time": datetime.now(timezone.utc).isoformat(),
                                     "entry_bar_count": 0,
-                                })
+                                }
+                                self.executor.save_position(pos_state)
+                                self.executor._append_open_trade_log_if_missing(pos_state, source="periodic_orphan_reset_sl")
                                 send_discord(f"{MSG_PREFIX}⚠️ 发现无保护仓位 → 已重设SL/TP\n"
                                              f"{d} {pos_size} @ ${ap:.2f}\n"
                                              f"SL: ${sl_p:.2f} / TP: ${tp_p:.2f}", mention=True)
@@ -998,16 +998,7 @@ class WSMonitor:
                             else:
                                 sl_p_est = ap * (1 + self.cfg.risk.stop_loss_pct)
                                 tp_p_est = ap * (1 - self.cfg.risk.take_profit_pct)
-                            self.executor.save_position({
-                                "direction": d, "entry_price": ap,
-                                "size": f"{abs(pv):.2f}",
-                                "sl_price": sl_p_est,
-                                "tp_price": tp_p_est,
-                                "sl_algo_id": next((a["algoId"] for a in algos), ""),
-                                "tp_order_id": "",
-                                "entry_time": datetime.now(timezone.utc).isoformat(),
-                                "entry_bar_count": 0,
-                            })
+                            self.executor.reconcile_position_from_exchange(source="periodic_orphan_reconcile")
 
                 # Ensure pending orders exist if no position (intrabar trigger mode only)
                 if self.cfg.execution.mode != "close_confirm_buffer":

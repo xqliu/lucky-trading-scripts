@@ -215,6 +215,66 @@ class TestEmergencyClose:
         assert ex._emergency_close("sell", "1") is False
 
 
+class TestReconcileAndStatus:
+    def test_save_position_none_refuses_if_exchange_still_open(self, tmp_path):
+        ex = make_executor()
+        ex.client.get_positions.return_value = [{"pos": "-0.42"}]
+        state_file = tmp_path / "position_state.json"
+        with patch("okx_bb.executor.POSITION_STATE_FILE", state_file):
+            ex.save_position(None)
+            assert not state_file.exists()
+
+    def test_reconcile_position_from_exchange_backfills_open_trade_log(self, tmp_path):
+        ex = make_executor()
+        ex.client.get_positions.return_value = [{
+            "pos": "-0.42",
+            "avgPx": "1963.4",
+            "cTime": "1772595001158",
+            "tradeId": "3525516747",
+        }]
+        ex.client.get_algo_orders.return_value = [{
+            "algoId": "3370478016656039936",
+            "side": "buy",
+            "slTriggerPx": "2022.3",
+        }]
+        ex.client.get_open_orders.return_value = []
+        state_file = tmp_path / "position_state.json"
+        trade_log_file = tmp_path / "trade_log.json"
+
+        with patch("okx_bb.executor.POSITION_STATE_FILE", state_file), \
+             patch("okx_bb.executor.TRADE_LOG_FILE", trade_log_file):
+            pos = ex.reconcile_position_from_exchange(source="test_reconcile")
+            assert pos is not None
+            assert pos["direction"] == "SHORT"
+            assert pos["sl_algo_id"] == "3370478016656039936"
+
+            state = json.loads(state_file.read_text())
+            assert state["position"]["direction"] == "SHORT"
+
+            log = json.loads(trade_log_file.read_text())
+            open_rows = [x for x in log if x.get("status") == "OPEN"]
+            assert len(open_rows) == 1
+            assert open_rows[0]["entry_price"] == 1963.4
+            assert open_rows[0]["direction"] == "SHORT"
+
+    def test_position_status_handles_none_tp(self):
+        ex = make_executor()
+        ex.reconcile_position_from_exchange = MagicMock(return_value={
+            "direction": "SHORT",
+            "entry_price": 1963.4,
+            "size": "0.42",
+            "sl_price": 2022.3,
+            "tp_price": None,
+            "entry_time": "2026-03-04T03:30:01.158000+00:00",
+        })
+        ex.client.get_ticker.return_value = {"last": 1945.59}
+        ex.client.get_balance.return_value = {"total_equity": 84.09}
+
+        status = ex.position_status()
+        assert "TP: None" in status
+        assert "SHORT ETH @ $1963.40" in status
+
+
 class TestDetermineExitReason:
     def test_sl_triggered(self):
         ex = make_executor()

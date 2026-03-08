@@ -20,7 +20,6 @@ if _parent not in sys.path:
 from core.types import Direction, Signal, Position, ExitReason, TradeResult
 from core.state import load_state, save_state
 from core.notify import send_discord
-MSG_PREFIX = ""
 from okx_bb.config import load_config, OKXConfig
 from okx_bb.exchange import OKXClient
 from okx_bb.strategy import detect_signal
@@ -42,7 +41,6 @@ class BBExecutor:
             self.cfg.api_key, self.cfg.secret_key, self.cfg.passphrase
         )
         self.instId = self.cfg.instId
-        self._inst_cache = None  # Cached instrument info
 
     # === State Management ===
 
@@ -52,8 +50,124 @@ class BBExecutor:
         return state.get("position")
 
     def save_position(self, pos: Optional[dict]):
-        """Persist position state."""
+        """Persist position state.
+
+        Safety rule: never clear local state unless exchange confirms flat.
+        This prevents "remote still has position, local already empty" drift.
+        """
+        if pos is None:
+            positions = self.client.get_positions(self.instId)
+            if positions is None:
+                logger.error("Refusing to clear local position: get_positions API failed")
+                return
+            if any(float(p.get("pos", 0)) != 0 for p in positions):
+                logger.error("Refusing to clear local position: exchange still shows open position")
+                return
         save_state(POSITION_STATE_FILE, {"position": pos})
+
+    def _append_open_trade_log_if_missing(self, pos: dict, exchange_trade_id: Optional[str] = None,
+                                          source: str = "exchange_reconcile"):
+        """Ensure trade_log has an OPEN record for the current live position."""
+        import json
+
+        log_path = TRADE_LOG_FILE
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log = []
+        if log_path.exists():
+            try:
+                loaded = json.loads(log_path.read_text())
+                if isinstance(loaded, list):
+                    log = loaded
+            except Exception as e:
+                logger.error(f"Failed to read trade log for OPEN backfill: {e}")
+
+        direction = pos.get("direction")
+        entry_price = float(pos.get("entry_price", 0) or 0)
+        size = float(pos.get("size", 0) or 0)
+        existing = next((x for x in log
+                         if x.get("status") == "OPEN"
+                         and x.get("direction") == direction
+                         and abs(float(x.get("entry_price", 0) or 0) - entry_price) < 1e-9
+                         and abs(float(x.get("size", 0) or 0) - size) < 1e-9), None)
+        if existing:
+            existing["last_sync_source"] = source
+            existing["last_sync_time"] = datetime.now(timezone.utc).isoformat()
+        else:
+            log.append({
+                "exchange_trade_id": exchange_trade_id,
+                "instId": self.instId,
+                "coin": self.cfg.coin,
+                "direction": direction,
+                "status": "OPEN",
+                "entry_price": entry_price,
+                "size": size,
+                "entry_time": pos.get("entry_time"),
+                "source": source,
+                "sl_price": pos.get("sl_price"),
+                "tp_price": pos.get("tp_price"),
+            })
+
+        tmp = log_path.with_suffix('.tmp')
+        tmp.write_text(json.dumps(log, indent=2, default=str))
+        tmp.rename(log_path)
+
+    def reconcile_position_from_exchange(self, source: str = "exchange_reconcile") -> Optional[dict]:
+        """Rebuild local position state from exchange as the source of truth.
+
+        - If exchange says flat: clear local state.
+        - If exchange says position exists: write standardized local state and ensure OPEN trade log exists.
+        - If API fails: keep current local state unchanged and return it.
+        """
+        positions = self.client.get_positions(self.instId)
+        if positions is None:
+            logger.error("reconcile_position_from_exchange: get_positions API failed; keeping local state")
+            return self.load_position()
+
+        pos_info = next((p for p in positions if float(p.get("pos", 0)) != 0), None)
+        if not pos_info:
+            self.save_position(None)
+            return None
+
+        pos_val = float(pos_info.get("pos", 0))
+        direction = "LONG" if pos_val > 0 else "SHORT"
+        avg_px = float(pos_info.get("avgPx", 0) or 0)
+        pos_size = abs(pos_val)
+
+        algos_cond = self.client.get_algo_orders(self.instId, "conditional") or []
+        open_ords = self.client.get_open_orders(self.instId) or []
+        close_side = "sell" if direction == "LONG" else "buy"
+
+        sl_algo = next((a for a in algos_cond
+                        if a.get("slTriggerPx") and a.get("side") == close_side), None)
+        sl_price = float(sl_algo.get("slTriggerPx", 0) or 0) if sl_algo else None
+        tp_order = next((o for o in open_ords
+                         if o.get("side") == close_side and o.get("reduceOnly") == "true"), None)
+        tp_price = float(tp_order.get("px", 0) or 0) if tp_order and tp_order.get("px") else None
+
+        entry_time = datetime.fromtimestamp(
+            int(pos_info.get("cTime", 0)) / 1000, tz=timezone.utc
+        ).isoformat() if pos_info.get("cTime") else datetime.now(timezone.utc).isoformat()
+
+        pos_state = {
+            "direction": direction,
+            "entry_price": avg_px,
+            "size": f"{pos_size:.2f}",
+            "sl_price": sl_price,
+            "tp_price": tp_price,
+            "sl_algo_id": sl_algo.get("algoId", "") if sl_algo else "",
+            "tp_order_id": tp_order.get("ordId", "") if tp_order else "",
+            "entry_time": entry_time,
+            "entry_bar_count": 0,
+            "last_sync_source": source,
+            "last_sync_time": datetime.now(timezone.utc).isoformat(),
+        }
+        self.save_position(pos_state)
+        self._append_open_trade_log_if_missing(
+            pos_state,
+            exchange_trade_id=pos_info.get("tradeId"),
+            source=source,
+        )
+        return pos_state
 
     # === Market Data ===
 
@@ -106,18 +220,16 @@ class BBExecutor:
             logger.error("No account equity")
             return None
 
-        # Notional value = equity * position_ratio * leverage
-        notional = equity * self.cfg.risk.position_ratio * self.cfg.risk.leverage
+        # Notional value = equity * position_ratio
+        notional = equity * self.cfg.risk.position_ratio
 
         # Max loss check
         max_loss = notional * self.cfg.risk.stop_loss_pct
         if max_loss > self.cfg.risk.max_single_loss:
             notional = self.cfg.risk.max_single_loss / self.cfg.risk.stop_loss_pct
 
-        # Get instrument info (cached)
-        if not self._inst_cache:
-            self._inst_cache = self.client.get_instrument(self.instId)
-        inst = self._inst_cache
+        # Get instrument info for contract multiplier
+        inst = self.client.get_instrument(self.instId)
         if not inst:
             logger.error("Failed to get instrument info")
             return None
@@ -136,13 +248,6 @@ class BBExecutor:
         # Round down to lot size precision
         contracts = int(contracts / lotSz) * lotSz
         if contracts < minSz:
-            # Check if minSz exceeds risk limits before forcing it
-            min_notional = minSz * ctVal * price
-            min_loss = min_notional * self.cfg.risk.stop_loss_pct
-            if min_loss > self.cfg.risk.max_single_loss:
-                logger.warning(f"minSz ${min_notional:.2f} exceeds max_single_loss "
-                               f"(loss=${min_loss:.2f} > ${self.cfg.risk.max_single_loss})")
-                return None
             contracts = minSz
 
         logger.info(f"Position sizing: equity=${equity:.2f}, "
@@ -174,8 +279,8 @@ class BBExecutor:
         side = "buy" if direction == "LONG" else "sell"
         close_side = "sell" if direction == "LONG" else "buy"
 
-        # NOTE: set_leverage is done at startup (ws_monitor.run), NOT here.
-        # Calling set_leverage when algo orders exist throws OKX error 59668.
+        # Set leverage first
+        self.client.set_leverage(self.instId, "5", "isolated")
 
         # 1. Market order
         logger.info(f"Opening {direction} {sz} contracts on {self.instId}")
@@ -183,12 +288,12 @@ class BBExecutor:
 
         if result.get("code") != "0":
             logger.error(f"Market order failed: {result}")
-            send_discord(f"{MSG_PREFIX}❌ OKX BB: 开仓失败\n{result.get('msg', 'unknown')}", mention=True)
+            send_discord(f"❌ OKX BB: 开仓失败\n{result.get('msg', 'unknown')}")
             return False
 
         if not result.get("data") or not result["data"]:
             logger.error(f"Market order returned empty data: {result}")
-            send_discord(f"{MSG_PREFIX}❌ OKX BB: 开仓返回空数据\n{result}", mention=True)
+            send_discord(f"❌ OKX BB: 开仓返回空数据\n{result}")
             return False
 
         ordId = result["data"][0].get("ordId", "")
@@ -214,7 +319,7 @@ class BBExecutor:
             # CRITICAL: Cannot calculate SL/TP with price=0
             logger.error("CRITICAL: entry_price=0, cannot set SL/TP. Emergency close!")
             self._emergency_close(close_side, sz)
-            send_discord(f"{MSG_PREFIX}🚨 OKX BB: 无法获取入场价格，紧急平仓", mention=True)
+            send_discord("🚨 OKX BB: 无法获取入场价格，紧急平仓", mention=True)
             return False
 
         # Calculate SL/TP prices
@@ -235,11 +340,10 @@ class BBExecutor:
             logger.error(f"SL order failed: {sl_result}")
             logger.error("EMERGENCY: SL failed, closing position immediately")
             self._emergency_close(close_side, sz)
-            send_discord(f"{MSG_PREFIX}🚨 OKX BB: 止损设置失败，紧急平仓\n{sl_result.get('msg')}", mention=True)
+            send_discord(f"🚨 OKX BB: 止损设置失败，紧急平仓\n{sl_result.get('msg')}")
             return False
 
         sl_algo_id = sl_result["data"][0].get("algoId", "") if sl_result["data"] else ""
-        logger.info(f"✅ SL placed: algoId={sl_algo_id} triggerPx=${sl_price:.2f} side={close_side} sz={sz}")
 
         # 3. Take-profit (limit order, reduceOnly to prevent accidental opens)
         tp_result = self.client.place_limit_order(
@@ -251,11 +355,10 @@ class BBExecutor:
         if tp_result.get("code") != "0" or not tp_result.get("data"):
             logger.error(f"TP order failed: {tp_result}")
             # TP failure is less critical — warn but keep position with SL
-            send_discord(f"{MSG_PREFIX}⚠️ OKX BB: TP设置失败，仅有SL保护\n{tp_result.get('msg')}")
+            send_discord(f"⚠️ OKX BB: TP设置失败，仅有SL保护\n{tp_result.get('msg')}")
             tp_ord_id = ""
         else:
             tp_ord_id = tp_result["data"][0].get("ordId", "") if tp_result["data"] else ""
-            logger.info(f"✅ TP placed: ordId={tp_ord_id} px=${tp_price:.2f} side={close_side} sz={sz}")
 
         # Save position state
         now = datetime.now(timezone.utc).isoformat()
@@ -274,7 +377,7 @@ class BBExecutor:
 
         # Notify
         send_discord(
-            f"{MSG_PREFIX}📊 OKX BB: {direction} {self.cfg.coin}\n"
+            f"📊 OKX BB: {direction} {self.cfg.coin}\n"
             f"入场: ${entry_price:.2f}\n"
             f"止损: ${sl_price:.2f} ({self.cfg.risk.stop_loss_pct*100:.1f}%)\n"
             f"止盈: ${tp_price:.2f} ({self.cfg.risk.take_profit_pct*100:.1f}%)\n"
@@ -304,7 +407,6 @@ class BBExecutor:
             result = self.client.place_market_order(
                 self.instId, side, sz, reduceOnly=True
             )
-            logger.info(f"Emergency close attempt {attempt + 1}: side={side} sz={sz} result={result.get('code')} msg={result.get('msg', '')}")
             if result.get("code") == "0":
                 time.sleep(2)
                 # Verify
@@ -319,7 +421,7 @@ class BBExecutor:
             time.sleep(3)
 
         logger.error("CRITICAL: Emergency close failed after 3 attempts!")
-        send_discord(f"{MSG_PREFIX}🚨🚨 OKX BB: 紧急平仓失败！需要手动干预！", mention=True)
+        send_discord("🚨🚨 OKX BB: 紧急平仓失败！需要手动干预！", mention=True)
         return False
 
     # === Position Monitoring ===
@@ -384,7 +486,7 @@ class BBExecutor:
             result = self._record_closed_position(pos, "timeout")
 
             send_discord(
-                f"{MSG_PREFIX}⏰ OKX BB: {self.cfg.coin} 持仓超时平仓\n"
+                f"⏰ OKX BB: {self.cfg.coin} 持仓超时平仓\n"
                 f"方向: {pos['direction']}\n"
                 f"持仓时间: {elapsed/3600:.1f}h",
                 mention=True,
@@ -431,8 +533,51 @@ class BBExecutor:
                 if tp and abs(fill_price - tp) / tp < 0.005:
                     return "tp"
 
-        logger.info(f"Exit reason: unknown (SL algo={pos.get('sl_algo_id')}, TP ord={pos.get('tp_order_id')})")
         return "unknown"
+
+    # Contract size: ETH-USDT-SWAP 1 contract = 0.01 ETH
+    CONTRACT_SIZE = 0.01
+
+    def position_status(self, pos: Optional[dict] = None) -> str:
+        """Return formatted position status string with accurate PnL.
+
+        This is the SINGLE SOURCE OF TRUTH for position reporting.
+        Used by run_once(), status.py, and market reports.
+        """
+        if pos is None:
+            pos = self.reconcile_position_from_exchange(source="position_status")
+        if not pos:
+            return "No position"
+
+        entry = float(pos.get("entry_price", 0) or 0)
+        size_contracts = float(pos.get("size", 0) or 0)
+        size_coin = size_contracts * self.CONTRACT_SIZE
+        ticker = self.client.get_ticker(self.instId)
+        current = ticker["last"] if ticker else entry
+
+        if pos["direction"] == "LONG":
+            pnl_usd = (current - entry) * size_coin
+        else:
+            pnl_usd = (entry - current) * size_coin
+
+        # Account-level return (what actually matters)
+        balance = self.client.get_balance()
+        account_equity = balance.get("total_equity", 0)
+        if account_equity > 0:
+            pnl_pct = pnl_usd / account_equity * 100
+        else:
+            pnl_pct = 0
+
+        sl_text = f"${float(pos['sl_price']):.2f}" if pos.get("sl_price") is not None else "None"
+        tp_text = f"${float(pos['tp_price']):.2f}" if pos.get("tp_price") is not None else "None"
+
+        return (
+            f"In position: {pos['direction']} {self.cfg.coin} @ ${entry:.2f}\n"
+            f"  Size: {size_contracts} contracts ({size_coin:.4f} {self.cfg.coin})\n"
+            f"  PnL: ${pnl_usd:+.2f} ({pnl_pct:+.2f}% of account)\n"
+            f"  SL: {sl_text} | TP: {tp_text}\n"
+            f"  Entry: {pos.get('entry_time', 'unknown')}"
+        )
 
     def _cancel_remaining_orders(self, pos: dict):
         """Cancel any leftover SL/TP orders after position closed."""
@@ -494,7 +639,7 @@ class BBExecutor:
             "timeout": ExitReason.TIMEOUT,
             "unknown": ExitReason.TIMEOUT,  # unknown exit reason — don't mislabel as TP
         }
-        exit_reason = reason_map.get(reason, ExitReason.TIMEOUT)
+        exit_reason = reason_map.get(reason, ExitReason.TP)
 
         result = TradeResult(
             coin=self.cfg.coin,
@@ -516,7 +661,7 @@ class BBExecutor:
         return result
 
     def _append_trade_log(self, result: TradeResult):
-        """Append trade result to JSON log."""
+        """Append trade result to JSON log (with dedup protection)."""
         import json
         log_path = TRADE_LOG_FILE
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -525,16 +670,36 @@ class BBExecutor:
         if log_path.exists():
             try:
                 log = json.loads(log_path.read_text())
-            except Exception as e:
-                logger.warning(f"Corrupt trade log, starting fresh: {e}")
+            except Exception:
+                pass
+
+        entry_time_str = result.entry_time.isoformat()
+        direction_str = result.direction.value
+
+        # Dedup: don't write a close record if one with same entry_time + direction already exists
+        existing_close = next((x for x in log
+                               if x.get("entry_time") == entry_time_str
+                               and x.get("direction") == direction_str
+                               and x.get("exit_price") is not None
+                               and x.get("status") != "OPEN"), None)
+        if existing_close:
+            logger.warning(f"Skipping duplicate trade_log close: {direction_str} entry={entry_time_str}")
+            return
+
+        # Also mark any OPEN record for this trade as closed
+        for row in log:
+            if (row.get("status") == "OPEN"
+                    and row.get("direction") == direction_str
+                    and row.get("entry_time") == entry_time_str):
+                row["status"] = "CLOSED"
 
         log.append({
             "coin": result.coin,
-            "direction": result.direction.value,
+            "direction": direction_str,
             "entry_price": result.entry_price,
             "exit_price": result.exit_price,
             "pnl_pct": result.pnl_pct,
-            "entry_time": result.entry_time.isoformat(),
+            "entry_time": entry_time_str,
             "exit_time": result.exit_time.isoformat(),
             "exit_reason": result.exit_reason.value,
         })
@@ -563,14 +728,7 @@ class BBExecutor:
         # If still in position, done
         pos = self.load_position()
         if pos:
-            entry = pos.get("entry_price", 0)
-            ticker = self.client.get_ticker(self.instId)
-            current = ticker["last"] if ticker else entry
-            if pos["direction"] == "LONG":
-                unrealized = (current - entry) / entry * 100
-            else:
-                unrealized = (entry - current) / entry * 100
-            return f"In position: {pos['direction']} {self.cfg.coin} @ {entry:.2f}, unrealized={unrealized:+.2f}%"
+            return self.position_status(pos)
 
         # Check for new signal
         signal = self.check_signal()
@@ -599,39 +757,9 @@ def main():
     executor = BBExecutor()
 
     if args.status:
-        pos = executor.load_position()
-        if pos:
-            print(f"Position: {pos['direction']} {executor.cfg.coin} @ {pos['entry_price']:.2f}")
-            print(f"  SL: {pos['sl_price']:.2f}")
-            print(f"  TP: {pos['tp_price']:.2f}")
-            print(f"  Entry: {pos['entry_time']}")
-        else:
-            print("No open position")
-
+        print(executor.position_status())
         balance = executor.client.get_balance()
-        if balance:
-            print(f"Account: ${float(balance.get('total_equity', 0)):.2f}")
-
-        # Show pending trigger orders
-        try:
-            algos = executor.client.get_algo_orders(executor.instId, "trigger")
-            if algos:
-                print(f"Pending triggers: {len(algos)}")
-                for a in algos:
-                    side = a.get("side", "?")
-                    trigger_px = a.get("triggerPx", "?")
-                    algo_id = a.get("algoId", "?")
-                    print(f"  {side.upper()} trigger @ ${float(trigger_px):.2f} ({algo_id})")
-            else:
-                print("No pending triggers")
-        except Exception as e:
-            print(f"Trigger check error: {e}")
-
-        # Show current price and BB levels
-        ticker = executor.client.get_ticker(executor.instId)
-        if ticker:
-            print(f"ETH: ${ticker['last']:.2f}")
-
+        print(f"Account: ${balance.get('total_equity', 0):.2f}")
         return
 
     if args.dry_run:
