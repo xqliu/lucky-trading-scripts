@@ -592,28 +592,37 @@ class BBExecutor:
         except Exception as e:
             logger.debug(f"TP cancel (may already be done): {e}")
 
-    def _get_actual_exit_price(self, pos: dict) -> float:
-        """Get actual exit price from fills or order history."""
+    def _get_actual_exit_info(self, pos: dict) -> tuple:
+        """Get actual exit price and time from fills or order history.
+
+        Returns (exit_price: float, exit_time: datetime).
+        """
+        now = datetime.now(timezone.utc)
+
         # Check recent fills
         fills = self.client.get_fills(instId=self.instId, limit=5)
         if fills:
-            # Most recent fill for this instrument
-            fill_price = float(fills[0].get("fillPx", 0))
+            fill = fills[0]
+            fill_price = float(fill.get("fillPx", 0))
             if fill_price > 0:
-                return fill_price
+                fill_ts = int(fill.get("ts", 0))
+                fill_time = datetime.fromtimestamp(fill_ts / 1000, tz=timezone.utc) if fill_ts else now
+                return fill_price, fill_time
 
         # Check TP order fill
         if pos.get("tp_order_id"):
             detail = self.client.get_order_detail(self.instId, pos["tp_order_id"])
             if detail and float(detail.get("avgPx", 0)) > 0:
-                return float(detail["avgPx"])
+                detail_ts = int(detail.get("uTime", 0))
+                detail_time = datetime.fromtimestamp(detail_ts / 1000, tz=timezone.utc) if detail_ts else now
+                return float(detail["avgPx"]), detail_time
 
         # Fallback to ticker (last resort)
         ticker = self.client.get_ticker(self.instId)
         if ticker:
             logger.warning("Using ticker price as exit price fallback")
-            return ticker["last"]
-        return pos["entry_price"]
+            return ticker["last"], now
+        return pos["entry_price"], now
 
     def _record_closed_position(self, pos: dict, reason: str) -> TradeResult:
         """Record a closed trade to log file.
@@ -621,7 +630,7 @@ class BBExecutor:
         Args:
             reason: 'sl', 'tp', 'timeout', 'unknown'
         """
-        exit_price = self._get_actual_exit_price(pos)
+        exit_price, exit_time = self._get_actual_exit_info(pos)
 
         if pos["direction"] == "LONG":
             pnl_pct = (exit_price - pos["entry_price"]) / pos["entry_price"]
@@ -650,7 +659,7 @@ class BBExecutor:
             pnl_pct=net_pnl_pct,
             pnl_usd=0,  # TODO: calculate from actual fills
             entry_time=datetime.fromisoformat(pos["entry_time"]),
-            exit_time=datetime.now(timezone.utc),
+            exit_time=exit_time,
             exit_reason=exit_reason,
             strategy="bb_breakout",
             fees_usd=0,
