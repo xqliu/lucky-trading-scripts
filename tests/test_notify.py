@@ -1,0 +1,35 @@
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from core import notify
+
+
+def test_send_discord_prefers_http_and_skips_cli():
+    notify._load_discord_bot_token.cache_clear()
+
+    with patch("core.notify._load_discord_bot_token", return_value="token123"), \
+         patch("core.notify.requests.post", return_value=SimpleNamespace(ok=True)), \
+         patch("core.notify.subprocess.run") as mock_run:
+        ok = notify.send_discord("hello", channel_id="123", mention=True)
+
+    assert ok is True
+    mock_run.assert_not_called()
+
+
+def test_send_discord_falls_back_to_cli_when_http_fails():
+    notify._load_discord_bot_token.cache_clear()
+
+    with patch("core.notify._load_discord_bot_token", return_value="token123"), \
+         patch("core.notify.requests.post", side_effect=RuntimeError("boom")), \
+         patch("core.notify.subprocess.run", return_value=SimpleNamespace(returncode=0, stderr="")) as mock_run:
+        ok = notify.send_discord("hello", channel_id="123")
+
+    assert ok is True
+    assert mock_run.called
+
+
+def test_send_discord_truncates_long_messages():
+    long_message = "x" * 5000
+    clean = notify._sanitize_message(long_message)
+    assert len(clean) <= notify.MAX_MESSAGE_LEN
+    assert clean.endswith("...[truncated]")

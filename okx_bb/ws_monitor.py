@@ -1092,7 +1092,7 @@ class WSMonitor:
             await asyncio.sleep(30)
             if not await self.accumulator.initialize(self._loop):
                 logger.error("Candle init failed. Exiting.")
-                return
+                raise RuntimeError("Candle init failed twice during startup")
 
         self._load_pending()
         self._running = True
