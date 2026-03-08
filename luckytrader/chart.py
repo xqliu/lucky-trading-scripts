@@ -326,7 +326,7 @@ def send_chart_to_discord(image_path: str, caption: str = "📊 30m K线",
     result = subprocess.run([
         'curl', '-s', '-X', 'POST',
         f'{api_base}/channels/{channel_id}/messages',
-        '-H', f'Authorization: Bot {token}',
+        '-H', f'Authorization: {token}',
         '-F', f'payload_json={{"content":"{caption}"}}',
         '-F', f'file=@{image_path}',
     ], capture_output=True, text=True, timeout=30)
