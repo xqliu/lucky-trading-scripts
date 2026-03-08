@@ -275,6 +275,100 @@ class TestReconcileAndStatus:
         assert "SHORT ETH @ $1963.40" in status
 
 
+    def test_save_position_none_refuses_if_api_fails(self, tmp_path):
+        """API failure should NOT clear local state."""
+        ex = make_executor()
+        ex.client.get_positions.return_value = None  # API error
+        state_file = tmp_path / "position_state.json"
+        state_file.write_text('{"position": {"direction": "SHORT"}}')
+        with patch("okx_bb.executor.POSITION_STATE_FILE", state_file):
+            ex.save_position(None)
+            # File should still have old data, not be cleared
+            data = json.loads(state_file.read_text())
+            assert data["position"] is not None
+
+    def test_save_position_none_succeeds_if_exchange_flat(self, tmp_path):
+        """When exchange confirms flat, local should be cleared."""
+        ex = make_executor()
+        ex.client.get_positions.return_value = [{"pos": "0"}]
+        state_file = tmp_path / "position_state.json"
+        state_file.write_text('{"position": {"direction": "SHORT"}}')
+        with patch("okx_bb.executor.POSITION_STATE_FILE", state_file):
+            ex.save_position(None)
+            data = json.loads(state_file.read_text())
+            assert data["position"] is None
+
+    def test_get_actual_exit_info_uses_fill_timestamp(self):
+        """Exit time should come from exchange fill, not datetime.now()."""
+        ex = make_executor()
+        ex.client.get_fills.return_value = [{
+            "fillPx": "1946.31",
+            "ts": "1772979292595",  # 2026-03-08 14:14:52 UTC
+        }]
+        price, exit_time = ex._get_actual_exit_info({"tp_order_id": ""})
+        assert price == 1946.31
+        assert exit_time.year == 2026
+        assert exit_time.month == 3
+        assert exit_time.day == 8
+        assert exit_time.hour == 14
+
+    def test_get_actual_exit_info_fallback_to_ticker(self):
+        """When no fills, fallback to ticker price with now() time."""
+        ex = make_executor()
+        ex.client.get_fills.return_value = []
+        ex.client.get_ticker.return_value = {"last": 1950.0}
+        price, exit_time = ex._get_actual_exit_info({"tp_order_id": ""})
+        assert price == 1950.0
+
+    def test_append_trade_log_dedup(self, tmp_path):
+        """Same trade should not be logged twice."""
+        ex = make_executor()
+        trade_log_file = tmp_path / "trade_log.json"
+        trade_log_file.write_text("[]")
+
+        from core.types import TradeResult, Direction, ExitReason
+        result = TradeResult(
+            coin="ETH", direction=Direction.SHORT,
+            entry_price=1963.4, exit_price=1946.31,
+            size=0.42, pnl_pct=0.0077, pnl_usd=0.72,
+            entry_time=datetime(2026, 3, 4, 3, 30, 1, tzinfo=timezone.utc),
+            exit_time=datetime(2026, 3, 8, 14, 14, 52, tzinfo=timezone.utc),
+            exit_reason=ExitReason.TIMEOUT,
+            strategy="bb_breakout", fees_usd=0,
+        )
+
+        with patch("okx_bb.executor.TRADE_LOG_FILE", trade_log_file):
+            ex._append_trade_log(result)
+            ex._append_trade_log(result)  # second call should be deduped
+
+        log = json.loads(trade_log_file.read_text())
+        close_records = [r for r in log if r.get("exit_price") is not None]
+        assert len(close_records) == 1
+
+    def test_reconcile_returns_local_if_api_fails(self, tmp_path):
+        """If API fails, reconcile should keep and return existing local state."""
+        ex = make_executor()
+        ex.client.get_positions.return_value = None  # API error
+        state_file = tmp_path / "position_state.json"
+        local_pos = {"direction": "SHORT", "entry_price": 1963.4}
+        state_file.write_text(json.dumps({"position": local_pos}))
+
+        with patch("okx_bb.executor.POSITION_STATE_FILE", state_file):
+            result = ex.reconcile_position_from_exchange()
+            assert result == local_pos
+
+    def test_reconcile_clears_if_exchange_flat(self, tmp_path):
+        """If exchange says flat, reconcile should clear local."""
+        ex = make_executor()
+        ex.client.get_positions.return_value = [{"pos": "0"}]
+        state_file = tmp_path / "position_state.json"
+        state_file.write_text(json.dumps({"position": {"direction": "SHORT"}}))
+
+        with patch("okx_bb.executor.POSITION_STATE_FILE", state_file):
+            result = ex.reconcile_position_from_exchange()
+            assert result is None
+
+
 class TestDetermineExitReason:
     def test_sl_triggered(self):
         ex = make_executor()
