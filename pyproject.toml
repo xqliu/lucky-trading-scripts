@@ -13,6 +13,7 @@ dependencies = [
     "hyperliquid-python-sdk",
     "requests",
     "eth-account",
+    "websockets",
 ]
 
 [project.optional-dependencies]
