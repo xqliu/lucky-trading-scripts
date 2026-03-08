@@ -320,7 +320,8 @@ def send_chart_to_discord(image_path: str, caption: str = "📊 30m K线",
         print("Discord token not found in config")
         return False
     
-    api_base = os.environ.get("OPENCLAW_DISCORD_API_BASE", "https://discord.com/api/v10")
+    api_base = (oc_config.get('channels', {}).get('discord', {}).get('apiBase', '')
+                or os.environ.get("OPENCLAW_DISCORD_API_BASE", "https://chat.llbrother.org/api/v10"))
     
     result = subprocess.run([
         'curl', '-s', '-X', 'POST',
