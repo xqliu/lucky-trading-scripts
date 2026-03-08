@@ -11,6 +11,10 @@ from okx_bb.executor import BBExecutor, POSITION_STATE_FILE
 from okx_bb.config import OKXConfig, StrategyConfig, RiskConfig, FeeConfig
 from core.types import ExitReason
 
+# Block all Discord notifications during tests
+import core.notify as _notify
+_notify.send_discord = lambda *a, **kw: None
+
 
 def make_config():
     return OKXConfig(
@@ -257,20 +261,23 @@ class TestReconcileAndStatus:
             assert open_rows[0]["entry_price"] == 1963.4
             assert open_rows[0]["direction"] == "SHORT"
 
-    def test_position_status_handles_none_tp(self):
+    def test_position_status_handles_none_tp(self, tmp_path):
         ex = make_executor()
-        ex.reconcile_position_from_exchange = MagicMock(return_value={
+        pos_data = {
             "direction": "SHORT",
             "entry_price": 1963.4,
             "size": "0.42",
             "sl_price": 2022.3,
             "tp_price": None,
             "entry_time": "2026-03-04T03:30:01.158000+00:00",
-        })
+        }
+        state_file = tmp_path / "position_state.json"
+        state_file.write_text(json.dumps({"position": pos_data}))
         ex.client.get_ticker.return_value = {"last": 1945.59}
         ex.client.get_balance.return_value = {"total_equity": 84.09}
 
-        status = ex.position_status()
+        with patch("okx_bb.executor.POSITION_STATE_FILE", state_file):
+            status = ex.position_status()
         assert "TP: None" in status
         assert "SHORT ETH @ $1963.40" in status
 
