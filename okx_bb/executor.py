@@ -545,7 +545,7 @@ class BBExecutor:
         Used by run_once(), status.py, and market reports.
         """
         if pos is None:
-            pos = self.reconcile_position_from_exchange(source="position_status")
+            pos = self.load_position()
         if not pos:
             return "No position"
 
