@@ -31,13 +31,6 @@ pip install hyperliquid-python-sdk eth-account requests pytest pytest-cov
 # Configure
 cp config/config.example.toml config/config.toml  # edit with your params
 
-# Create config/config.toml (API credentials)
-cat > config/config.toml << 'EOF'
-MAIN_WALLET=0xYourWalletAddress
-API_WALLET=0xYourApiWallet
-API_PRIVATE_KEY=0xYourPrivateKey
-EOF
-
 # Run tests (no real money touched!)
 cd scripts && python -m pytest tests/ -v
 
@@ -80,7 +73,35 @@ max_hold_hours = 48        # max hours before timeout close
 
 [strategy]
 vol_threshold = 2.0        # volume breakout multiplier
+
+[notifications]
+discord_channel_id = "1234567890123456789"
+discord_mention_1 = "<@111111111111111111>"
+discord_mention_2 = "<@222222222222222222>"
 ```
+
+For OKX BB, copy `okx_bb/config/config.toml.sample` to `okx_bb/config/config.toml` and set `notifications.discord_channel_id` there as well.
+
+## Notifications
+
+Discord notifications intentionally avoid hardcoded IDs in the repo. Configure them locally instead:
+
+1. Put your channel and mention targets in `config/config.toml` or `okx_bb/config/config.toml`.
+2. Keep your bot token in `~/.openclaw/openclaw.json` under `channels.discord.token`.
+3. If you use a Discord-compatible gateway other than `discord.com`, set:
+
+```bash
+export OPENCLAW_DISCORD_API_BASE="https://your-gateway.example/api/v10"
+```
+
+4. Optional overrides if you want to drive notifications entirely from env vars:
+
+```bash
+export OPENCLAW_DISCORD_CHANNEL_ID="1234567890123456789"
+export OPENCLAW_DISCORD_MENTIONS="<@111111111111111111> <@222222222222222222>"
+```
+
+Do not commit real channel IDs, mention IDs, bot tokens, or private gateway URLs.
 
 ## Safety Features
 

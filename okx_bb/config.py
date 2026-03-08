@@ -68,7 +68,7 @@ class OKXConfig:
     coin: str = "ETH"
     instId: str = "ETH-USDT-SWAP"  # OKX instrument ID
     # Notifications
-    discord_channel_id: str = "1234567890123456789"
+    discord_channel_id: str = ""
 
 
 def load_config() -> OKXConfig:
@@ -120,7 +120,7 @@ def load_config() -> OKXConfig:
     # Exchange settings
     coin = "ETH"
     instId = "ETH-USDT-SWAP"
-    discord_channel_id = "1234567890123456789"
+    discord_channel_id = ""
     if "exchange" in raw:
         ex = raw["exchange"]
         coin = ex.get("coin", coin)

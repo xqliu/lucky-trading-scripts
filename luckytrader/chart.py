@@ -299,7 +299,7 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
 
 def send_chart_to_discord(image_path: str, caption: str = "📊 30m K线",
                           channel_id: str = None):
-    """通过 Spacebar REST API 直接发送图片到 Discord 频道"""
+    """通过 Discord-compatible REST API 直接发送图片到频道"""
     import subprocess, json
     
     if channel_id is None:
@@ -320,7 +320,7 @@ def send_chart_to_discord(image_path: str, caption: str = "📊 30m K线",
         print("Discord token not found in config")
         return False
     
-    api_base = "https://discord.com/api/v10"
+    api_base = os.environ.get("OPENCLAW_DISCORD_API_BASE", "https://discord.com/api/v10")
     
     result = subprocess.run([
         'curl', '-s', '-X', 'POST',

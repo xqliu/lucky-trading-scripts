@@ -791,8 +791,8 @@ def close_and_cleanup(coin: str, is_long: bool, size: float, reason: str,
     notify_discord(
         f"{'❌' if pnl_pct < 0 else '✅'} **{reason}** {direction} {coin}\n"
         f"💰 平仓价: ~${close_price:,.2f} | 盈亏: {pnl_pct:+.2f}%\n"
-        f"{extra_msg}\n"
-        f"<@111111111111111111> <@222222222222222222>"
+        f"{extra_msg}"
+        f"{f'\\n{DISCORD_MENTIONS}' if DISCORD_MENTIONS else ''}"
     )
     
     logger.info(f"close_and_cleanup: {reason} {direction} {coin} pnl={pnl_pct:+.2f}%")
@@ -1181,8 +1181,8 @@ def reconcile_orphan_positions():
                     f"🚨 **孤儿仓位修复** {direction} {coin}\n"
                     f"💰 入场: ${entry:,.2f} | 数量: {size}\n"
                     f"🛑 SL: ${sl_price:,.2f} | 🎯 TP: ${tp_price:,.2f}\n"
-                    f"⚠️ State 已重建，使用默认参数\n"
-                    f"<@111111111111111111> <@222222222222222222>"
+                    f"⚠️ State 已重建，使用默认参数"
+                    f"{f'\\n{DISCORD_MENTIONS}' if DISCORD_MENTIONS else ''}"
                 )
                 
                 reconciled.append({"coin": coin, "direction": direction, "size": size, "entry": entry})
