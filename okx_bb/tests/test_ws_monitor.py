@@ -106,11 +106,7 @@ class TestReconciliation:
             await m._reconcile_on_startup()
 
         _run(run())
-        m.executor.save_position.assert_called()
-        saved = m.executor.save_position.call_args[0][0]
-        assert saved["direction"] == "SHORT"
-        assert saved["sl_algo_id"] == "sl1"
-        assert saved["tp_order_id"] == "tp1"
+        m.executor.reconcile_position_from_exchange.assert_called_once_with(source="startup_reconcile")
 
 
 class TestPeriodicOrphan:

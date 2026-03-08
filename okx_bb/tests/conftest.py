@@ -28,6 +28,7 @@ def _block_okx_side_effects(tmp_path):
          patch('okx_bb.executor.time.sleep'), \
          patch('okx_bb.exchange.time.sleep'), \
          patch('okx_bb.executor.send_discord', return_value=True), \
+         patch('okx_bb.ws_monitor.send_discord', return_value=True), \
          patch('core.notify.send_discord', return_value=True), \
          patch('okx_bb.executor.STATE_DIR', test_state_dir), \
          patch('okx_bb.executor.POSITION_STATE_FILE', test_state_dir / "position_state.json"), \

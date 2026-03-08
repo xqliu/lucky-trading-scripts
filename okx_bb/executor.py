@@ -279,8 +279,9 @@ class BBExecutor:
         side = "buy" if direction == "LONG" else "sell"
         close_side = "sell" if direction == "LONG" else "buy"
 
-        # Set leverage first
-        self.client.set_leverage(self.instId, "5", "isolated")
+        # Leverage is set by ws_monitor startup reconciliation path only.
+        # Never set leverage here: OKX returns 59668 when algo orders exist,
+        # and open_position must not mutate account-level config.
 
         # 1. Market order
         logger.info(f"Opening {direction} {sz} contracts on {self.instId}")

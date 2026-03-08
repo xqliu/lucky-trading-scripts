@@ -300,7 +300,11 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
 def send_chart_to_discord(image_path: str, caption: str = "📊 30m K线",
                           channel_id: str = None):
     """通过 Discord-compatible REST API 直接发送图片到频道"""
-    import subprocess, json
+    import subprocess, json, hashlib, os
+
+    image_size = Path(image_path).stat().st_size if Path(image_path).exists() else -1
+    image_hash = hashlib.sha1(Path(image_path).read_bytes()).hexdigest()[:10] if Path(image_path).exists() else "missing"
+    logger.info(f"CHART_SEND start pid={os.getpid()} file={image_path} size={image_size} sha1={image_hash} caption={caption}")
     
     if channel_id is None:
         cfg = get_config()
@@ -334,12 +338,15 @@ def send_chart_to_discord(image_path: str, caption: str = "📊 30m K线",
     try:
         resp = json.loads(result.stdout)
         if resp.get('id'):
+            logger.info(f"CHART_SEND ok pid={os.getpid()} file={image_path} sha1={image_hash} message={resp['id']}")
             print(f"Chart sent: message {resp['id']}")
             return True
         else:
+            logger.error(f"CHART_SEND failed pid={os.getpid()} file={image_path} sha1={image_hash} resp={resp}")
             print(f"Send failed: {resp}")
             return False
     except Exception as e:
+        logger.error(f"CHART_SEND exception pid={os.getpid()} file={image_path} sha1={image_hash} err={e}")
         print(f"Send error: {e}, stdout: {result.stdout[:200]}")
         return False
 
