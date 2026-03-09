@@ -98,130 +98,98 @@ def get_hl_positions(info: Info, wallet: str):
 
 
 def verify_coin(info: Info, coin: str, cfg, report: list):
-    """Verify one coin's trading logic."""
-    report.append(f"\n{'─' * 40}")
-    report.append(f"🪙 {coin}")
-    report.append(f"{'─' * 40}")
-
+    """Verify one coin's trading logic. Compact output."""
     # 1. Fetch candles
     try:
         candles_30m = get_candles_from_hl(info, coin, "30m", 72)
         candles_4h = get_4h_candles(info, coin, 336)
-        report.append(f"  30m candles: {len(candles_30m)}, 4h candles: {len(candles_4h)}")
-        if candles_30m:
-            report.append(f"  最新 30m close: {candles_30m[-1]['c']:.2f}")
     except Exception as e:
-        report.append(f"  ❌ 无法获取 K 线: {e}")
+        report.append(f"❌ {coin}: 无法获取K线 {e}")
         return
 
-    # 2. Run production signal detection
+    # 2. Signal
     try:
-        # Build candle list in the format detect_signal expects
         idx = len(candles_30m) - 1
         coin_cfg = getattr(cfg.coins, coin, None) if hasattr(cfg, 'coins') else None
         signal = hl_detect_signal(candles_30m, candles_4h, idx, cfg, coin_cfg=coin_cfg)
-        report.append(f"  📊 信号计算结果: {signal or 'HOLD'}")
     except Exception as e:
-        report.append(f"  ❌ 信号计算异常: {e}")
-        signal = None
+        report.append(f"❌ {coin}: 信号计算异常 {e}")
+        return
 
-    # 3. Key indicator values
-    if candles_30m:
-        closes = [c["c"] for c in candles_30m]
-        # Volume
-        vols = [c["v"] for c in candles_30m]
-        coin_cfg = getattr(cfg.coins, coin, None) if hasattr(cfg, 'coins') else None
-        range_bars = getattr(coin_cfg, 'range_bars', cfg.strategy.range_bars) if coin_cfg else cfg.strategy.range_bars
-        lookback = getattr(coin_cfg, 'lookback_bars', cfg.strategy.lookback_bars) if coin_cfg else cfg.strategy.lookback_bars
-        vol_threshold = getattr(coin_cfg, 'vol_threshold', cfg.strategy.vol_threshold) if coin_cfg else cfg.strategy.vol_threshold
-
-        if len(closes) > lookback:
-            high_range = max(c["h"] for c in candles_30m[-range_bars:])
-            low_range = min(c["l"] for c in candles_30m[-range_bars:])
-            range_pct = (high_range - low_range) / low_range * 100
-            report.append(f"  Range({range_bars}): {low_range:.2f} - {high_range:.2f} ({range_pct:.2f}%)")
-
-        if len(vols) > lookback:
-            recent_vol = vols[-1]
-            avg_vol = sum(vols[-lookback:]) / lookback
-            vol_ratio = recent_vol / avg_vol if avg_vol > 0 else 0
-            report.append(f"  Volume: {recent_vol:.2f} / avg {avg_vol:.2f} = {vol_ratio:.2f}x (threshold: {vol_threshold})")
-
-    # 4. 4h trend
+    # 3. 4h trend
+    trend_4h = "?"
     if candles_4h and len(candles_4h) > 21:
         closes_4h = [c["c"] for c in candles_4h]
         ema8 = ema(closes_4h, 8)
         ema21 = ema(closes_4h, 21)
         if ema8 and ema21:
             trend_4h = "UP" if ema8[-1] > ema21[-1] else "DOWN"
-            report.append(f"  4h Trend: {trend_4h} (EMA8={ema8[-1]:.2f}, EMA21={ema21[-1]:.2f})")
 
-    # 5. Compare with ws_monitor log
-    report.append(f"  🔍 ws_monitor 日志:")
-    log_lines = get_ws_monitor_log_last_signals(coin, 5)
-    if log_lines and "(could not" not in log_lines[0]:
-        for l in log_lines[-3:]:
-            # Truncate long lines
-            report.append(f"    {l[-150:]}")
-    else:
-        report.append(f"    ⚠️ 无相关日志")
+    # 4. Volume ratio
+    vol_str = ""
+    if candles_30m:
+        vols = [c["v"] for c in candles_30m]
+        coin_cfg2 = getattr(cfg.coins, coin, None) if hasattr(cfg, 'coins') else None
+        lookback = getattr(coin_cfg2, 'lookback_bars', cfg.strategy.lookback_bars) if coin_cfg2 else cfg.strategy.lookback_bars
+        if len(vols) > lookback:
+            avg_vol = sum(vols[-lookback:]) / lookback
+            vol_ratio = vols[-1] / avg_vol if avg_vol > 0 else 0
+            vol_str = f"vol {vol_ratio:.2f}x"
+
+    close_px = candles_30m[-1]['c'] if candles_30m else 0
+    report.append(f"{coin} {close_px:.1f}｜{signal or 'HOLD'}｜4h {trend_4h}｜{vol_str}")
 
 
 def main():
     report = []
-    report.append("=" * 60)
-    report.append("Hyperliquid 交易逻辑验证报告")
-    report.append(f"时间: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    report.append("=" * 60)
 
-    # Load config
     import os
     os.environ.setdefault("LUCKYTRADER_CONFIG_DIR",
                           str(Path.home() / ".openclaw/workspace/trading/config"))
     cfg = get_config()
-
-    # Init HL info (read-only, no wallet needed)
     info = Info(skip_ws=True)
 
-    # Get positions
+    # Positions + account
     wallet = cfg.exchange.main_wallet
     positions = get_hl_positions(info, wallet)
-    report.append(f"\n📋 当前持仓:")
+    pos_parts = []
     if positions and "error" not in positions[0]:
         for p in positions:
-            report.append(f"  {p['coin']} {p['size']:+.4f} @ {p['entry_px']:.2f}, uPnL: {p['unrealized_pnl']:+.4f}")
-    else:
-        report.append(f"  无持仓" if not positions else f"  ⚠️ {positions[0].get('error', '?')}")
+            pos_parts.append(f"{p['coin']} {p['size']:+.4f} @ {p['entry_px']:.2f}")
+    pos_str = "，".join(pos_parts) if pos_parts else "无持仓"
 
-    # Get account
     try:
         state = info.user_state(wallet)
         equity = float(state.get("marginSummary", {}).get("accountValue", 0))
-        report.append(f"  账户: ${equity:.2f}")
     except:
-        pass
+        equity = 0
 
-    # Verify each coin
-    for coin in ["BTC", "ETH"]:
-        verify_coin(info, coin, cfg, report)
-
-    # Service status
+    # Service
     try:
         svc = subprocess.run(["systemctl", "is-active", "ws-monitor"],
                              capture_output=True, text=True, timeout=5)
-        status = svc.stdout.strip()
-        report.append(f"\n🔧 ws-monitor 服务: {status}")
-    except Exception as e:
-        report.append(f"\n🔧 ws-monitor 服务: 无法查询 ({e})")
+        svc_status = svc.stdout.strip()
+    except:
+        svc_status = "unknown"
 
-    # Summary
-    report.append("\n" + "=" * 60)
-    issues = [l for l in report if "❌" in l]
-    if issues:
-        report.append(f"⚠️ 发现 {len(issues)} 个问题")
+    # Verify coins
+    for coin in ["BTC", "ETH"]:
+        verify_coin(info, coin, cfg, report)
+
+    has_issues = any("❌" in l for l in report)
+
+    # Header
+    if has_issues or svc_status != "active":
+        header = "⚠️ **HL 验证有问题**"
     else:
-        report.append("✅ HL 交易逻辑验证通过")
-    report.append("=" * 60)
+        header = "✅ **HL 验证通过**"
+
+    final = [header]
+    final.append(f"${equity:.0f}｜{pos_str}｜服务: {svc_status}")
+    final.extend(report)
+    if svc_status != "active":
+        final.append(f"❌ 服务异常: {svc_status}")
+    report = final
 
     output = "\n".join(report)
     print(output)

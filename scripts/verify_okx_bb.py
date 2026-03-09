@@ -110,140 +110,109 @@ def main():
     cfg = load_config()
 
     report = []
-    report.append("=" * 60)
-    report.append("OKX BB 交易逻辑验证报告")
-    report.append(f"时间: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    report.append("=" * 60)
+    has_issues = False
 
     # 1. Fetch candles
     try:
         candles = get_recent_candles_from_exchange(cfg.instId, "30m", 300)
         closes = [c["close"] for c in candles]
-        report.append(f"\n📊 K线数据: {len(candles)} 根 30m candles")
-        report.append(f"   最新 close: {closes[-1]:.2f}")
-        report.append(f"   时间范围: {datetime.fromtimestamp(candles[0]['ts']/1000, tz=timezone.utc).strftime('%m-%d %H:%M')} → {datetime.fromtimestamp(candles[-1]['ts']/1000, tz=timezone.utc).strftime('%m-%d %H:%M')} UTC")
     except Exception as e:
-        report.append(f"\n❌ 无法获取 K 线数据: {e}")
+        report.append(f"❌ OKX BB: 无法获取K线 {e}")
         print("\n".join(report))
         return 1
 
-    # 2. Calculate BB using production code
+    # 2. Calculate BB + trend using production code
     idx = len(closes) - 1
     bb = get_bb_levels(closes, cfg.strategy.bb_period, cfg.strategy.bb_multiplier, idx)
     if bb is None:
-        report.append("\n❌ BB 计算返回 None（数据不足）")
+        report.append("❌ OKX BB: BB计算失败（数据不足）")
         print("\n".join(report))
         return 1
 
     mid, upper, lower = bb
-    report.append(f"\n📈 BB({cfg.strategy.bb_period}, {cfg.strategy.bb_multiplier}):")
-    report.append(f"   Upper: {upper:.2f}")
-    report.append(f"   Mid:   {mid:.2f}")
-    report.append(f"   Lower: {lower:.2f}")
-    report.append(f"   Width: {(upper - lower) / mid * 100:.2f}%")
 
-    # 3. Calculate trend using production code
     period = cfg.strategy.trend_ema_period
     lookback = cfg.strategy.trend_lookback
     ema_start = max(0, idx - period * 3)
     ema_vals = ema(closes[ema_start:idx + 1], period)
     if len(ema_vals) >= lookback + 1:
-        trend_rising = ema_vals[-1] > ema_vals[-1 - lookback]
-        trend = "up" if trend_rising else "down"
-        report.append(f"\n📉 Trend EMA({period}, lookback={lookback}):")
-        report.append(f"   EMA current: {ema_vals[-1]:.2f}")
-        report.append(f"   EMA {lookback} bars ago: {ema_vals[-1 - lookback]:.2f}")
-        report.append(f"   Trend: {trend}")
+        trend = "up" if ema_vals[-1] > ema_vals[-1 - lookback] else "down"
     else:
         trend = "unknown"
-        report.append(f"\n⚠️ Trend EMA 数据不足")
 
-    # 4. Check close-confirm-buffer entry conditions
+    # 3. Signal check
     prev_close = closes[-1]
     buffer = cfg.execution.entry_buffer_pct
-    report.append(f"\n🎯 Close-Confirm-Buffer 检查:")
-    report.append(f"   prev_close={prev_close:.2f}, buffer={buffer}")
-
     long_cond = trend == "up" and prev_close > upper * (1 + buffer)
     short_cond = trend == "down" and prev_close < lower * (1 - buffer)
 
     if long_cond:
-        report.append(f"   ✅ LONG 信号: close {prev_close:.2f} > upper {upper:.2f}")
+        signal_str = f"LONG（close {prev_close:.2f} > upper {upper:.2f}）"
     elif short_cond:
-        report.append(f"   ✅ SHORT 信号: close {prev_close:.2f} < lower {lower:.2f}")
+        signal_str = f"SHORT（close {prev_close:.2f} < lower {lower:.2f}）"
     else:
-        report.append(f"   ⏸️ 无信号")
         if trend == "up":
             gap = upper * (1 + buffer) - prev_close
-            report.append(f"   做多还差: {gap:.2f} ({gap/prev_close*100:.2f}%)")
+            signal_str = f"HOLD，做多差 {gap:.1f}（{gap/prev_close*100:.1f}%）"
         elif trend == "down":
             gap = prev_close - lower * (1 - buffer)
-            report.append(f"   做空还差: {gap:.2f} ({gap/prev_close*100:.2f}%)")
+            signal_str = f"HOLD，做空差 {gap:.1f}（{gap/prev_close*100:.1f}%）"
+        else:
+            signal_str = "HOLD"
 
-    # 5. Compare with ws_monitor log
-    report.append(f"\n🔍 对比 ws_monitor 日志:")
+    # 4. Compare with ws_monitor log
+    log_ok = True
+    log_detail = ""
     cc_lines = get_ws_monitor_log_last_cc(5)
-    if not cc_lines or "(could not" in cc_lines[0]:
-        report.append(f"   ⚠️ 无法读取日志: {cc_lines[0] if cc_lines else 'empty'}")
-    else:
+    if cc_lines and "(could not" not in cc_lines[0]:
         last_cc = parse_cc_line(cc_lines[-1])
         if last_cc:
-            report.append(f"   日志最后 CC: prev_close={last_cc['prev_close']:.2f} "
-                          f"upper={last_cc['upper']:.2f} lower={last_cc['lower']:.2f} "
-                          f"trend={last_cc['trend']}")
-
-            # Compare
+            tol = mid * 0.015
             discrepancies = []
-            # BB values may differ slightly because ws_monitor uses accumulated candles
-            # while we fetch fresh from API. Allow 0.5% tolerance.
-            tol = mid * 0.015  # 1.5% tolerance — ws_monitor uses accumulated WS candles, API fetch is slightly ahead
             if abs(last_cc["upper"] - upper) > tol:
-                discrepancies.append(f"upper: 日志={last_cc['upper']:.2f} vs 计算={upper:.2f} (差{abs(last_cc['upper']-upper):.2f})")
+                discrepancies.append(f"upper: 日志{last_cc['upper']:.2f} vs 计算{upper:.2f}")
             if abs(last_cc["lower"] - lower) > tol:
-                discrepancies.append(f"lower: 日志={last_cc['lower']:.2f} vs 计算={lower:.2f} (差{abs(last_cc['lower']-lower):.2f})")
+                discrepancies.append(f"lower: 日志{last_cc['lower']:.2f} vs 计算{lower:.2f}")
             if last_cc["trend"] != trend and trend != "unknown":
-                discrepancies.append(f"trend: 日志={last_cc['trend']} vs 计算={trend}")
-
+                discrepancies.append(f"trend: 日志{last_cc['trend']} vs 计算{trend}")
             if discrepancies:
-                report.append(f"   ⚠️ 发现差异:")
-                for d in discrepancies:
-                    report.append(f"      - {d}")
-            else:
-                report.append(f"   ✅ 日志与独立计算一致")
-        else:
-            report.append(f"   ⚠️ 无法解析日志行")
-            report.append(f"   最后日志: {cc_lines[-1][-120:]}")
-
-    # 6. Position state
-    pos = get_position_state()
-    report.append(f"\n📋 本地仓位状态:")
-    if pos:
-        report.append(f"   {pos.get('direction', '?')} @ {pos.get('entry_price', '?')}")
-        report.append(f"   SL: {pos.get('sl_price', 'N/A')}, TP: {pos.get('tp_price', 'N/A')}")
+                log_ok = False
+                log_detail = "；".join(discrepancies)
     else:
-        report.append(f"   无持仓")
+        log_ok = False
+        log_detail = "无法读取日志"
 
-    # 7. Service status
+    # 5. Position + service
+    pos = get_position_state()
+    pos_str = "无持仓"
+    if pos:
+        pos_str = f"{pos.get('direction','?')} @ {pos.get('entry_price','?')}, SL={pos.get('sl_price','N/A')}"
+
     try:
         svc = subprocess.run(["systemctl", "is-active", "okx-bb-monitor"],
                              capture_output=True, text=True, timeout=5)
-        status = svc.stdout.strip()
-        report.append(f"\n🔧 服务状态: {status}")
-    except Exception as e:
-        report.append(f"\n🔧 服务状态: 无法查询 ({e})")
+        svc_status = svc.stdout.strip()
+    except:
+        svc_status = "unknown"
 
-    # Summary
-    report.append("\n" + "=" * 60)
-    issues = [l for l in report if "❌" in l or "⚠️ 发现差异" in l]
-    if issues:
-        report.append(f"⚠️ 发现 {len(issues)} 个潜在问题，需关注")
+    # Build compact report
+    if log_ok and svc_status == "active":
+        report.append(f"✅ **OKX BB 验证通过**")
     else:
-        report.append("✅ OKX BB 交易逻辑验证通过")
-    report.append("=" * 60)
+        has_issues = True
+        report.append(f"⚠️ **OKX BB 验证有问题**")
+
+    report.append(f"ETH {prev_close:.2f}｜BB {lower:.1f}-{upper:.1f}｜trend {trend}｜{signal_str}")
+    report.append(f"仓位: {pos_str}｜服务: {svc_status}")
+
+    if not log_ok:
+        report.append(f"⚠️ 日志差异: {log_detail}")
+    if svc_status != "active":
+        report.append(f"❌ 服务异常: {svc_status}")
 
     output = "\n".join(report)
     print(output)
-    return 0
+    return 1 if has_issues else 0
 
 
 if __name__ == "__main__":
