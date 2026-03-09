@@ -147,18 +147,18 @@ def main():
     short_cond = trend == "down" and prev_close < lower * (1 - buffer)
 
     if long_cond:
-        signal_str = f"LONG（close {prev_close:.2f} > upper {upper:.2f}）"
+        signal_str = f"🟢 LONG 触发（close {prev_close:.2f} 突破上轨 {upper:.2f}）"
     elif short_cond:
-        signal_str = f"SHORT（close {prev_close:.2f} < lower {lower:.2f}）"
+        signal_str = f"🔴 SHORT 触发（close {prev_close:.2f} 跌破下轨 {lower:.2f}）"
     else:
         if trend == "up":
             gap = upper * (1 + buffer) - prev_close
-            signal_str = f"HOLD，做多差 {gap:.1f}（{gap/prev_close*100:.1f}%）"
+            signal_str = f"HOLD｜趋势向上，需涨 {gap:.1f}（{gap/prev_close*100:.1f}%）突破上轨才开多"
         elif trend == "down":
             gap = prev_close - lower * (1 - buffer)
-            signal_str = f"HOLD，做空差 {gap:.1f}（{gap/prev_close*100:.1f}%）"
+            signal_str = f"HOLD｜趋势向下，需跌 {gap:.1f}（{gap/prev_close*100:.1f}%）跌破下轨才开空"
         else:
-            signal_str = "HOLD"
+            signal_str = "HOLD｜趋势不明"
 
     # 4. Compare with ws_monitor log
     log_ok = True
