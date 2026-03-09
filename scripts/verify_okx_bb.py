@@ -160,30 +160,35 @@ def main():
         else:
             signal_str = "HOLD｜趋势不明"
 
-    # 4. Compare with ws_monitor log
+    # 4. Compare with ws_monitor log (skip if position open — CC checks pause during positions)
+    pos = get_position_state()
     log_ok = True
     log_detail = ""
-    cc_lines = get_ws_monitor_log_last_cc(5)
-    if cc_lines and "(could not" not in cc_lines[0]:
-        last_cc = parse_cc_line(cc_lines[-1])
-        if last_cc:
-            tol = mid * 0.015
-            discrepancies = []
-            if abs(last_cc["upper"] - upper) > tol:
-                discrepancies.append(f"upper: 日志{last_cc['upper']:.2f} vs 计算{upper:.2f}")
-            if abs(last_cc["lower"] - lower) > tol:
-                discrepancies.append(f"lower: 日志{last_cc['lower']:.2f} vs 计算{lower:.2f}")
-            if last_cc["trend"] != trend and trend != "unknown":
-                discrepancies.append(f"trend: 日志{last_cc['trend']} vs 计算{trend}")
-            if discrepancies:
-                log_ok = False
-                log_detail = "；".join(discrepancies)
+    if pos:
+        log_detail = "有持仓，CC check 暂停，跳过日志对比"
     else:
-        log_ok = False
-        log_detail = "无法读取日志"
+        cc_lines = get_ws_monitor_log_last_cc(5)
+        if cc_lines and "(could not" not in cc_lines[0]:
+            last_cc = parse_cc_line(cc_lines[-1])
+            if last_cc:
+                tol = mid * 0.015
+                discrepancies = []
+                if abs(last_cc["upper"] - upper) > tol:
+                    discrepancies.append(f"upper: 日志{last_cc['upper']:.2f} vs 计算{upper:.2f}")
+                if abs(last_cc["lower"] - lower) > tol:
+                    discrepancies.append(f"lower: 日志{last_cc['lower']:.2f} vs 计算{lower:.2f}")
+                if last_cc["trend"] != trend and trend != "unknown":
+                    discrepancies.append(f"trend: 日志{last_cc['trend']} vs 计算{trend}")
+                if discrepancies:
+                    log_ok = False
+                    log_detail = "；".join(discrepancies)
+        else:
+            log_ok = False
+            log_detail = "无法读取日志"
 
     # 5. Position + service
-    pos = get_position_state()
+    if pos is None:
+        pos = get_position_state()
     pos_str = "无持仓"
     if pos:
         pos_str = f"{pos.get('direction','?')} @ {pos.get('entry_price','?')}, SL={pos.get('sl_price','N/A')}"
