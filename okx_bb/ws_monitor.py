@@ -40,7 +40,7 @@ from okx_bb.executor import BBExecutor, STATE_DIR
 from okx_bb.strategy import get_bb_levels
 from core.indicators import ema
 from core.state import load_state, save_state
-from core.notify import send_discord
+from core.notify import send_discord as _send_discord_sync
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +48,22 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
+
+
+async def send_discord(message: str, channel_id=None, mention: bool = False):
+    """Non-blocking Discord notification. Runs sync send in thread with timeout."""
+    try:
+        loop = asyncio.get_running_loop()
+        await asyncio.wait_for(
+            loop.run_in_executor(
+                None, lambda: _send_discord_sync(message, channel_id, mention)
+            ),
+            timeout=15,
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"send_discord timed out (15s), message dropped: {message[:100]}")
+    except Exception as e:
+        logger.error(f"send_discord failed: {e}")
 
 WS_BUSINESS_URL = "wss://ws.okx.com:8443/ws/v5/business"
 WS_PRIVATE_URL = "wss://ws.okx.com:8443/ws/v5/private"
@@ -122,6 +138,10 @@ class WSMonitor:
         # Mutex: covers cancel → check → place atomically
         self._order_lock = asyncio.Lock()
 
+        # Watchdog: track last activity to detect frozen event loop
+        self._last_activity = time.time()
+        self.WATCHDOG_TIMEOUT = 300  # 5 min without any WS message → restart
+
         # Thread-safe REST: each executor thread gets its own Session
         self._thread_local = threading.local()
 
@@ -154,11 +174,17 @@ class WSMonitor:
         return await self._loop.run_in_executor(None, _run)
 
     async def _rest_exchange(self, method_name: str, *args, **kwargs):
-        """Call OKXClient method by name, thread-safe."""
+        """Call OKXClient method by name, thread-safe. 30s asyncio timeout."""
         def _run():
             tc = self._get_thread_client()
             return getattr(tc, method_name)(*args, **kwargs)
-        return await self._loop.run_in_executor(None, _run)
+        try:
+            return await asyncio.wait_for(
+                self._loop.run_in_executor(None, _run), timeout=30
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"REST call {method_name} timed out after 30s!")
+            raise
 
     # === Pending State ===
 
@@ -220,7 +246,7 @@ class WSMonitor:
                     logger.error(f"SL re-set FAILED: {sl_result} — EMERGENCY CLOSE!")
                     await self._rest_exchange("place_market_order",
                         self.cfg.instId, close_side, f"{pos_size:.2f}", True)
-                    send_discord(f"{MSG_PREFIX}🚨 启动发现裸仓且SL设置失败 → 紧急平仓\n"
+                    await send_discord(f"{MSG_PREFIX}🚨 启动发现裸仓且SL设置失败 → 紧急平仓\n"
                                  f"{direction} {pos_size} @ ${avg_px:.2f}", mention=True)
                     self.executor.save_position(None)
                 else:
@@ -239,7 +265,7 @@ class WSMonitor:
                     }
                     self.executor.save_position(pos_state)
                     self.executor._append_open_trade_log_if_missing(pos_state, source="startup_reconcile_reset_sl")
-                    send_discord(f"{MSG_PREFIX}⚠️ 启动发现裸仓 → 已重设SL/TP\n"
+                    await send_discord(f"{MSG_PREFIX}⚠️ 启动发现裸仓 → 已重设SL/TP\n"
                                  f"{direction} {pos_size} @ ${avg_px:.2f}\n"
                                  f"SL: ${sl_p:.2f} / TP: ${tp_p:.2f}", mention=True)
             else:
@@ -258,7 +284,7 @@ class WSMonitor:
                 self.executor.reconcile_position_from_exchange(source="startup_reconcile")
                 logger.info(f"Position has SL — state synced")
                 if not had_local_state:
-                    send_discord(f"{MSG_PREFIX}⚠️ 启动恢复仓位: {direction} @ ${avg_px:.2f}")
+                    await send_discord(f"{MSG_PREFIX}⚠️ 启动恢复仓位: {direction} @ ${avg_px:.2f}")
 
         # 2. In close-confirm mode, cancel ALL trigger orders (we don't use them)
         if self.cfg.execution.mode == "close_confirm_buffer":
@@ -436,12 +462,12 @@ class WSMonitor:
                         await self._rest_exchange("place_market_order",
                             self.cfg.instId, close_side, f"{abs(pv):.2f}", True)
                         self.executor.save_position(None)
-                        send_discord(f"{MSG_PREFIX}🚨 入场处理异常且无SL → 紧急平仓\n{e}", mention=True)
+                        await send_discord(f"{MSG_PREFIX}🚨 入场处理异常且无SL → 紧急平仓\n{e}", mention=True)
                     else:
                         logger.info("SL exists despite exception — position safe")
             except Exception as e2:
                 logger.error(f"Exception during exception handling: {e2}", exc_info=True)
-                send_discord(f"{MSG_PREFIX}🚨🚨 入场处理双重异常！需要手动检查！\n{e}\n{e2}", mention=True)
+                await send_discord(f"{MSG_PREFIX}🚨🚨 入场处理双重异常！需要手动检查！\n{e}\n{e2}", mention=True)
         finally:
             self._entry_in_progress = False
 
@@ -462,7 +488,7 @@ class WSMonitor:
                 close_side = "sell" if direction == "LONG" else "buy"
                 await self._rest_exchange("place_market_order",
                     self.cfg.instId, close_side, fill_sz, True)
-                send_discord(f"{MSG_PREFIX}🚨 入场价格无效，紧急平仓", mention=True)
+                await send_discord(f"{MSG_PREFIX}🚨 入场价格无效，紧急平仓", mention=True)
                 return
 
         # Get actual position size from exchange (handles partial fills)
@@ -514,7 +540,7 @@ class WSMonitor:
             logger.error(f"SL FAILED: {sl_result} — EMERGENCY CLOSE!")
             await self._rest_exchange("place_market_order",
                 self.cfg.instId, close_side, actual_sz, True)
-            send_discord(f"{MSG_PREFIX}🚨 止损设置失败，紧急平仓", mention=True)
+            await send_discord(f"{MSG_PREFIX}🚨 止损设置失败，紧急平仓", mention=True)
             self.executor.save_position(None)
             return
 
@@ -529,7 +555,7 @@ class WSMonitor:
             logger.error(f"SL {sl_algo_id} not live after placement — emergency close!")
             await self._rest_exchange("place_market_order",
                 self.cfg.instId, close_side, actual_sz, True)
-            send_discord(f"{MSG_PREFIX}🚨 止损未激活，紧急平仓", mention=True)
+            await send_discord(f"{MSG_PREFIX}🚨 止损未激活，紧急平仓", mention=True)
             self.executor.save_position(None)
             return
 
@@ -543,7 +569,7 @@ class WSMonitor:
             logger.info(f"✅ TP placed: ordId={tp_ord_id} px=${tp_price:.2f} side={close_side} sz={actual_sz}")
         else:
             logger.error(f"TP failed (SL active): {tp_result}")
-            send_discord(f"{MSG_PREFIX}⚠️ TP设置失败，仅有SL保护")
+            await send_discord(f"{MSG_PREFIX}⚠️ TP设置失败，仅有SL保护")
 
         # Save position state + ensure OPEN trade log stays in sync
         pos_state = {
@@ -556,7 +582,7 @@ class WSMonitor:
         self.executor.save_position(pos_state)
         self.executor._append_open_trade_log_if_missing(pos_state, source="entry_fill")
 
-        send_discord(
+        await send_discord(
             f"{MSG_PREFIX}📊 OKX BB: {direction} {self.cfg.coin}\n"
             f"入场: ${fill_price:.2f}\n"
             f"止损: ${sl_price:.2f} ({self.cfg.risk.stop_loss_pct*100:.1f}%)\n"
@@ -618,6 +644,7 @@ class WSMonitor:
     # === Message Handlers ===
 
     async def _handle_business_message(self, msg: str):
+        self._last_activity = time.time()
         try:
             data = json.loads(msg)
         except json.JSONDecodeError:
@@ -637,6 +664,7 @@ class WSMonitor:
                     await self._on_candle_close()
 
     async def _handle_private_message(self, msg: str):
+        self._last_activity = time.time()
         try:
             data = json.loads(msg)
         except json.JSONDecodeError:
@@ -720,7 +748,7 @@ class WSMonitor:
             result = await self._rest(self.executor.check_position)
             if result:
                 logger.info(f"Position closed: {result.exit_reason.value}")
-                send_discord(
+                await send_discord(
                     f"{MSG_PREFIX}📊 OKX BB 平仓: {result.exit_reason.value}\n"
                     f"{result.direction.value} {result.coin}\n"
                     f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
@@ -804,10 +832,10 @@ class WSMonitor:
                     await self._on_entry_filled(dir_label, fill_price, fill_sz)
                 else:
                     logger.error(f"Market order sent but no position found! ordId={ord_id}")
-                    send_discord(f"{MSG_PREFIX}⚠️ 市价单发出但未检测到持仓 ordId={ord_id}", mention=True)
+                    await send_discord(f"{MSG_PREFIX}⚠️ 市价单发出但未检测到持仓 ordId={ord_id}", mention=True)
             else:
                 logger.error(f"Market order failed: {result}")
-                send_discord(f"{MSG_PREFIX}⚠️ 市价开仓失败: {result}", mention=True)
+                await send_discord(f"{MSG_PREFIX}⚠️ 市价开仓失败: {result}", mention=True)
 
     async def _check_position_closed(self):
         """Check if SL/TP hit. If position closed, place new triggers."""
@@ -816,7 +844,7 @@ class WSMonitor:
             result = await self._rest(self.executor.check_position)
             if result:
                 logger.info(f"Position closed: {result.exit_reason.value}")
-                send_discord(
+                await send_discord(
                     f"{MSG_PREFIX}📊 OKX BB 平仓: {result.exit_reason.value}\n"
                     f"{result.direction.value} {result.coin}\n"
                     f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
@@ -833,6 +861,16 @@ class WSMonitor:
         while self._running:
             await asyncio.sleep(300)
             try:
+                # Watchdog: if no WS message for WATCHDOG_TIMEOUT, force restart
+                idle_secs = time.time() - self._last_activity
+                if idle_secs > self.WATCHDOG_TIMEOUT:
+                    logger.error(f"WATCHDOG: No WS activity for {idle_secs:.0f}s — forcing restart!")
+                    await send_discord(
+                        f"🚨 OKX BB Watchdog: {idle_secs:.0f}秒无WS消息，强制重启",
+                        mention=True)
+                    self._running = False
+                    return
+
                 # Check for stale triggered state (limit order didn't fill)
                 if self._triggered_direction and self._triggered_at:
                     elapsed = time.time() - self._triggered_at
@@ -867,7 +905,7 @@ class WSMonitor:
                             self._triggered_direction = None
                             self._triggered_sz = None
                             self._triggered_at = None
-                            send_discord(f"{MSG_PREFIX}⚠️ Trigger 触发但限价单未成交（{elapsed:.0f}s），已重置", mention=True)
+                            await send_discord(f"{MSG_PREFIX}⚠️ Trigger 触发但限价单未成交（{elapsed:.0f}s），已重置", mention=True)
                             await self._atomic_cancel_and_place()
                         continue
 
@@ -880,7 +918,7 @@ class WSMonitor:
                 result = await self._rest(self.executor.check_position)
                 if result:
                     logger.info(f"Periodic: closed {result.exit_reason.value}")
-                    send_discord(
+                    await send_discord(
                         f"{MSG_PREFIX}📊 平仓 (periodic): {result.exit_reason.value}\n"
                         f"{result.direction.value} {result.coin}\n"
                         f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
@@ -917,13 +955,13 @@ class WSMonitor:
                             local_pos["sl_algo_id"] = sl_algo_id
                             self.executor.save_position(local_pos)
                             logger.info(f"SL re-set OK: algoId={sl_algo_id} triggerPx={sl_p:.2f}")
-                            send_discord(f"{MSG_PREFIX}⚠️ 定期检查发现 SL 丢失 → 已重设\n"
+                            await send_discord(f"{MSG_PREFIX}⚠️ 定期检查发现 SL 丢失 → 已重设\n"
                                          f"SL: ${sl_p:.2f}", mention=True)
                         else:
                             logger.error(f"SL re-set FAILED: {sl_result} — EMERGENCY CLOSE!")
                             await self._rest_exchange("place_market_order",
                                 self.cfg.instId, close_side, sz, True)
-                            send_discord(f"{MSG_PREFIX}🚨 SL 丢失且重设失败 → 紧急平仓", mention=True)
+                            await send_discord(f"{MSG_PREFIX}🚨 SL 丢失且重设失败 → 紧急平仓", mention=True)
                             self.executor.save_position(None)
                             if self.cfg.execution.mode != "close_confirm_buffer":
                                 await self._atomic_cancel_and_place()
@@ -964,7 +1002,7 @@ class WSMonitor:
                                 logger.error(f"Periodic: SL re-set FAILED — emergency close!")
                                 await self._rest_exchange("place_market_order",
                                     self.cfg.instId, close_side, f"{pos_size:.2f}", True)
-                                send_discord(f"{MSG_PREFIX}🚨 发现无保护仓位且SL设置失败，紧急平仓", mention=True)
+                                await send_discord(f"{MSG_PREFIX}🚨 发现无保护仓位且SL设置失败，紧急平仓", mention=True)
                                 self.executor.save_position(None)
                             else:
                                 sl_algo_id = sl_result["data"][0].get("algoId", "")
@@ -982,7 +1020,7 @@ class WSMonitor:
                                 }
                                 self.executor.save_position(pos_state)
                                 self.executor._append_open_trade_log_if_missing(pos_state, source="periodic_orphan_reset_sl")
-                                send_discord(f"{MSG_PREFIX}⚠️ 发现无保护仓位 → 已重设SL/TP\n"
+                                await send_discord(f"{MSG_PREFIX}⚠️ 发现无保护仓位 → 已重设SL/TP\n"
                                              f"{d} {pos_size} @ ${ap:.2f}\n"
                                              f"SL: ${sl_p:.2f} / TP: ${tp_p:.2f}", mention=True)
                         else:
@@ -1125,7 +1163,7 @@ class WSMonitor:
         except Exception:
             _commit = "unknown"
 
-        send_discord(
+        await send_discord(
             f"🟢 OKX BB 启动\n"
             f"{self.cfg.instId} BB({self.cfg.strategy.bb_period}, "
             f"{self.cfg.strategy.bb_multiplier})\n"
@@ -1141,8 +1179,11 @@ class WSMonitor:
         """Signal handler — set flag only. Cleanup via ExecStop."""
         logger.info("Shutdown signal received")
         self._running = False
-        # Don't do blocking REST here — ExecStop cleanup.py handles it
-        send_discord(f"🔴 OKX BB Monitor 停止")
+        # Non-blocking: fire-and-forget in sync context
+        try:
+            _send_discord_sync("🔴 OKX BB Monitor 停止")
+        except Exception:
+            pass
 
 
 def main():
