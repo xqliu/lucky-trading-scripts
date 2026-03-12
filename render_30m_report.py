@@ -32,6 +32,8 @@ def render_hl_block() -> str:
     withdraw = float(state['withdrawable'])
 
     lines = [
+        '**30分钟市场报告**',
+        '',
         '**Section 1 HL**',
         f'- 账户权益：${acct_val:.2f}',
         f'- 可提现：${withdraw:.2f}',
@@ -65,38 +67,55 @@ def render_hl_block() -> str:
     return '\n'.join(lines)
 
 
-def render_market_summary(btc: dict, eth: dict) -> str:
-    lines = ['**Section 3 市场综述**']
-    for result in (btc, eth):
-        coin = result['coin']
-        lines.append(f'')
-        lines.append(format_report(result))
+def render_conclusion(btc: dict, eth: dict) -> str:
+    lines = ['**结论**']
     if btc['signal'] == 'HOLD' and eth['signal'] == 'HOLD':
-        lines.append('\n**结论**')
         lines.append('- BTC / ETH 均未形成可执行突破，继续等待。')
         lines.append('- 当前优先级是观察量能是否继续放大，以及是否有效突破区间边界。')
     else:
-        lines.append('\n**结论**')
         lines.append(f"- 出现可执行信号：BTC={btc['signal']} / ETH={eth['signal']}")
         lines.append('- 按既定风控执行，不主观追单。')
     return '\n'.join(lines)
 
 
-def main() -> int:
-    btc = analyze('BTC')
-    eth = analyze('ETH')
-
+def build_part1(btc: dict) -> str:
     parts = [
-        '**30分钟市场报告**',
-        '',
         render_hl_block(),
         '',
         '**Section 2 OKX**',
         render_okx_block(),
         '',
-        render_market_summary(btc, eth),
+        '**Section 3 市场综述（BTC）**',
+        '',
+        format_report(btc),
     ]
-    print('\n'.join(parts))
+    return '\n'.join(parts)
+
+
+def build_part2(eth: dict, btc: dict) -> str:
+    parts = [
+        '**Section 3 市场综述（ETH）**',
+        '',
+        format_report(eth),
+        '',
+        render_conclusion(btc, eth),
+    ]
+    return '\n'.join(parts)
+
+
+def main() -> int:
+    part = sys.argv[1] if len(sys.argv) > 1 else 'all'
+    btc = analyze('BTC')
+    eth = analyze('ETH')
+
+    if part == '1':
+        print(build_part1(btc))
+    elif part == '2':
+        print(build_part2(eth, btc))
+    else:
+        print(build_part1(btc))
+        print('\n---PART2---\n')
+        print(build_part2(eth, btc))
     return 0
 
 
