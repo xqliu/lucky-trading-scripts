@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / 'repos' / 'lucky-trading-scripts'))
 
 from hyperliquid.info import Info
-from luckytrader.signal import analyze, format_report
+from luckytrader.signal import analyze
 
 
 def load_hl_wallet():
@@ -39,12 +39,13 @@ def render_hl_block() -> str:
         f'- 可提现：${withdraw:.2f}',
     ]
 
-    positions = []
+    has_pos = False
     for ap in state.get('assetPositions', []):
         pos = ap.get('position', {})
         szi = float(pos.get('szi', 0) or 0)
         if szi == 0:
             continue
+        has_pos = True
         coin = pos.get('coin', '?')
         direction = '多头' if szi > 0 else '空头'
         entry = float(pos.get('entryPx') or 0)
@@ -59,10 +60,78 @@ def render_hl_block() -> str:
         lines.append(f'- 仓位价值：${pos_val:.2f}')
         lines.append(f'- 未实现盈亏：${upl:.2f}')
         lines.append(f'- ROE：{roe:.2f}% | 杠杆：{lev}x | 强平价：{liq_text}')
-        positions.append(coin)
 
-    if not positions:
+    if not has_pos:
         lines.append('- 当前持仓：无')
+
+    return '\n'.join(lines)
+
+
+def format_coin_section(result: dict) -> str:
+    lines = []
+    lines.append(f"🪙 {result['coin']}")
+    lines.append(f"💰 价格: ${result['price']:,.0f}")
+    lines.append(f"📊 成交量: ${result['volume_usd']:,.0f} (均值: ${result['avg_volume_24h']:,.0f}, {result['volume_ratio']:.2f}x)")
+    lines.append(f"📏 区间: ${result['low_24h']:,.0f} - ${result['high_24h']:,.0f} ({result['range_24h']:.1f}%)")
+    lines.append(f"📈 趋势: {result['trend']} (EMA8: {result['ema_8']:,.0f} / EMA21: {result['ema_21']:,.0f}) | 4h趋势: {result.get('trend_4h', 'N/A')}")
+    lines.append(f"📉 RSI: {result['rsi']:.1f}")
+
+    b = result['breakout']
+    vol_str = f"放量{b['vol_ratio_30m']:.1f}x" if b['vol_confirm'] else f"量{b['vol_ratio_30m']:.1f}x"
+    lines.append(f"\n🟢 做多: 突破${result['high_24h']:,.0f} {'✅' if b['up'] else '❌'} + {vol_str} {'✅' if b['vol_confirm'] else '❌'}")
+    lines.append(f"🔴 做空: 跌破${result['low_24h']:,.0f} {'✅' if b['down'] else '❌'} + {vol_str} {'✅' if b['vol_confirm'] else '❌'}")
+
+    if result['supports']:
+        lines.append(f"\n🛡️ 支撑: {', '.join(f'${s[0]:,.0f}({s[1]}次)' for s in result['supports'])}")
+    if result['resistances']:
+        lines.append(f"🚧 阻力: {', '.join(f'${r[0]:,.0f}({r[1]}次)' for r in result['resistances'])}")
+
+    sig = result['signal']
+    if result['signal_reasons']:
+        sig += f" — {'; '.join(result['signal_reasons'])}"
+    lines.append(f"\n⚡ 信号: {sig}")
+    if result.get('signal_filtered'):
+        lines.append(f"🚫 过滤: {result['signal_filtered']}")
+
+    if 'suggested_stop' in result:
+        from luckytrader.config import get_config
+        _c = get_config()
+        lines.append(f"🛑 止损: ${result['suggested_stop']:,.0f} (-{_c.risk.stop_loss_pct*100:.0f}%)")
+        lines.append(f"🎯 止盈: ${result['suggested_tp']:,.0f} (+{_c.risk.take_profit_pct*100:.0f}%)")
+        lines.append(f"⏰ 持仓上限: {_c.risk.max_hold_hours}h")
+
+    return '\n'.join(lines)
+
+
+def render_shared_context(result: dict) -> str:
+    lines = []
+    ctx = result.get('market_context', {})
+    if ctx:
+        lines.append('💹 资金费率 & OI:')
+        for coin_name in ('BTC', 'ETH'):
+            c = ctx.get(coin_name)
+            if c:
+                fr = c['funding_rate']
+                fr_annual = fr * 24 * 365 * 100
+                oi_usd = c['open_interest'] * c['mark_price']
+                lines.append(f"  {coin_name}: 费率 {fr*100:.4f}%/h ({fr_annual:+.1f}%年化) | OI ${oi_usd/1e9:.2f}B | ${c['mark_price']:,.0f}")
+
+    trades = result.get('recent_trades', [])
+    if trades:
+        from datetime import datetime, timezone, timedelta
+        _CST = timezone(timedelta(hours=8))
+        lines.append('\n📋 最近交易:')
+        for t in trades:
+            def _fmt_time(ts):
+                return datetime.fromtimestamp(ts/1000, tz=timezone.utc).astimezone(_CST).strftime('%m-%d %H:%M')
+            if t['status'] == 'closed' and t['open_price']:
+                open_t = _fmt_time(t['open_time'])
+                close_t = _fmt_time(t['close_time'])
+                pnl_str = f" | {'+' if t['pnl'] >= 0 else ''}{t['pnl']:.2f}U" if t['pnl'] is not None else ''
+                lines.append(f"  {t['coin']} {t['direction']} {open_t} {t['open_price']:,.0f}→{close_t} {t['close_price']:,.0f}{pnl_str}")
+            elif t['status'] == 'open':
+                open_t = _fmt_time(t['open_time'])
+                lines.append(f"  {t['coin']} {t['direction']} {open_t} {t['open_price']:,.0f}→持仓中")
 
     return '\n'.join(lines)
 
@@ -79,7 +148,7 @@ def render_conclusion(btc: dict, eth: dict) -> str:
 
 
 def build_part1(btc: dict) -> str:
-    parts = [
+    return '\n'.join([
         render_hl_block(),
         '',
         '**Section 2 OKX**',
@@ -87,20 +156,20 @@ def build_part1(btc: dict) -> str:
         '',
         '**Section 3 市场综述（BTC）**',
         '',
-        format_report(btc),
-    ]
-    return '\n'.join(parts)
+        format_coin_section(btc),
+    ])
 
 
 def build_part2(eth: dict, btc: dict) -> str:
-    parts = [
+    return '\n'.join([
         '**Section 3 市场综述（ETH）**',
         '',
-        format_report(eth),
+        format_coin_section(eth),
+        '',
+        render_shared_context(eth),
         '',
         render_conclusion(btc, eth),
-    ]
-    return '\n'.join(parts)
+    ])
 
 
 def main() -> int:
