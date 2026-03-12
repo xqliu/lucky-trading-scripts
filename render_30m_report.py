@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import io
-import json
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -10,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / 'repos' / 'lucky-trading-scripts'))
 
 from hyperliquid.info import Info
-from luckytrader.signal import analyze
+from luckytrader.signal import analyze, format_report
 
 
 def load_hl_wallet():
@@ -26,86 +25,78 @@ def render_okx_block() -> str:
     return buf.getvalue().strip()
 
 
-def load_trailing_state() -> dict:
-    path = Path(__file__).parent.parent / 'memory' / 'trading' / 'trailing_state.json'
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return {}
+def render_hl_block() -> str:
+    info = Info(skip_ws=True)
+    state = info.user_state(load_hl_wallet())
+    acct_val = float(state['marginSummary']['accountValue'])
+    withdraw = float(state['withdrawable'])
+
+    lines = [
+        '**Section 1 HL**',
+        f'- 账户权益：${acct_val:.2f}',
+        f'- 可提现：${withdraw:.2f}',
+    ]
+
+    positions = []
+    for ap in state.get('assetPositions', []):
+        pos = ap.get('position', {})
+        szi = float(pos.get('szi', 0) or 0)
+        if szi == 0:
+            continue
+        coin = pos.get('coin', '?')
+        direction = '多头' if szi > 0 else '空头'
+        entry = float(pos.get('entryPx') or 0)
+        pos_val = float(pos.get('positionValue') or 0)
+        upl = float(pos.get('unrealizedPnl') or 0)
+        roe = float(pos.get('returnOnEquity') or 0) * 100
+        lev = pos.get('leverage', {}).get('value', '?')
+        liq = pos.get('liquidationPx')
+        liq_text = f'{float(liq):.2f}' if liq not in (None, '') else 'N/A'
+        lines.append(f'- 当前持仓：{coin} {direction} {abs(szi):g}')
+        lines.append(f'- 开仓价：{entry:.2f}')
+        lines.append(f'- 仓位价值：${pos_val:.2f}')
+        lines.append(f'- 未实现盈亏：${upl:.2f}')
+        lines.append(f'- ROE：{roe:.2f}% | 杠杆：{lev}x | 强平价：{liq_text}')
+        positions.append(coin)
+
+    if not positions:
+        lines.append('- 当前持仓：无')
+
+    return '\n'.join(lines)
 
 
-def yesno(v: bool) -> str:
-    return 'Y' if v else 'N'
-
-
-def sig_summary(r: dict) -> str:
-    b = r.get('breakout', {})
-    return (
-        f"{r['coin']} ${r['price']:.0f} | 30m {r['trend']} / 4h {r.get('trend_4h','N/A')} | "
-        f"RSI {r['rsi']:.1f} | 量比 {r['volume_ratio']:.2f}x | "
-        f"↑突 {yesno(b.get('up', False))} ↓破 {yesno(b.get('down', False))} | 信号 {r['signal']}"
-    )
+def render_market_summary(btc: dict, eth: dict) -> str:
+    lines = ['**Section 3 市场综述**']
+    for result in (btc, eth):
+        coin = result['coin']
+        lines.append(f'')
+        lines.append(format_report(result))
+    if btc['signal'] == 'HOLD' and eth['signal'] == 'HOLD':
+        lines.append('\n**结论**')
+        lines.append('- BTC / ETH 均未形成可执行突破，继续等待。')
+        lines.append('- 当前优先级是观察量能是否继续放大，以及是否有效突破区间边界。')
+    else:
+        lines.append('\n**结论**')
+        lines.append(f"- 出现可执行信号：BTC={btc['signal']} / ETH={eth['signal']}")
+        lines.append('- 按既定风控执行，不主观追单。')
+    return '\n'.join(lines)
 
 
 def main() -> int:
     btc = analyze('BTC')
     eth = analyze('ETH')
-    trailing = load_trailing_state()
 
-    info = Info(skip_ws=True)
-    state = info.user_state(load_hl_wallet())
-    acct_val = float(state['marginSummary']['accountValue'])
-
-    eth_pos = None
-    for ap in state.get('assetPositions', []):
-        pos = ap.get('position', {})
-        if pos.get('coin') == 'ETH' and float(pos.get('szi', 0)) != 0:
-            eth_pos = pos
-            break
-
-    if eth_pos:
-        eth_ts = trailing.get('ETH', {})
-        stop_text = '止损单在场' if eth_ts.get('has_stop') else '无止损单'
-        if eth_ts.get('last_stop_price'):
-            stop_text = f"SL {float(eth_ts['last_stop_price']):.0f}"
-        trail_text = '追踪开' if eth_ts.get('trailing_active') else '追踪未开'
-        hl_line = (
-            f"HL: ${acct_val:.2f} | ETH LONG {abs(float(eth_pos['szi'])):g} @ {float(eth_pos['entryPx']):.0f} "
-            f"| uPnL {float(eth_pos['unrealizedPnl']):+.2f} | {stop_text} | {trail_text}"
-        )
-    else:
-        hl_line = f"HL: ${acct_val:.2f} | 空仓"
-
-    okx_block = render_okx_block()
-    if '当前持仓**: 无' in okx_block or '**当前持仓**: 无' in okx_block:
-        if '本地残留' in okx_block:
-            okx_line = 'OKX: 空仓 | Monitor active | 异常=本地残留'
-        else:
-            okx_line = 'OKX: 空仓 | Monitor active | 状态一致'
-    elif '当前持仓' in okx_block:
-        okx_line = 'OKX: 有持仓 | Monitor active | 需看图确认方向'
-    else:
-        okx_line = 'OKX: 状态未知'
-
-    if btc['signal'] == 'HOLD' and eth['signal'] == 'HOLD':
-        concl = '结论: BTC/ETH 都没形成可执行突破，继续等。'
-    elif btc['signal'] != 'HOLD' or eth['signal'] != 'HOLD':
-        concl = f"结论: 出现信号 — BTC {btc['signal']} / ETH {eth['signal']}，但仍按风控执行。"
-    else:
-        concl = '结论: 继续观察。'
-
-    print('30分钟报告')
-    print(hl_line)
-    print(okx_line)
-    print(sig_summary(btc))
-    print(sig_summary(eth))
-    print(
-        f"区间: BTC {btc['low_24h']:.0f}-{btc['high_24h']:.0f} | "
-        f"ETH {eth['low_24h']:.0f}-{eth['high_24h']:.0f}"
-    )
-    print(concl)
+    parts = [
+        '**30分钟市场报告**',
+        '',
+        render_hl_block(),
+        '',
+        '**Section 2 OKX**',
+        render_okx_block(),
+        '',
+        render_market_summary(btc, eth),
+    ]
+    print('\n'.join(parts))
     return 0
 
 
