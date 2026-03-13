@@ -492,7 +492,9 @@ class WSMonitor:
                 return
 
         # Get actual position size from exchange (handles partial fills)
+        logger.info("Step 1: Querying exchange positions...")
         positions = await self._rest_exchange("get_positions", self.cfg.instId)
+        logger.info(f"Step 1 done: got {len(positions) if positions else 0} positions")
         actual_sz = fill_sz
         if positions:
             for p in positions:
@@ -504,6 +506,7 @@ class WSMonitor:
                     break
 
         # Cancel other side (under lock)
+        logger.info("Step 2: Cancelling opposite side triggers...")
         async with self._order_lock:
             if direction == "LONG" and self._pending_short_algoId:
                 try:
@@ -532,6 +535,7 @@ class WSMonitor:
             tp_price = fill_price * (1 - self.cfg.risk.take_profit_pct)
 
         # SET SL — CRITICAL
+        logger.info(f"Step 3: Setting SL @ {sl_price:.2f}...")
         sl_result = await self._rest_exchange(
             "place_stop_order", self.cfg.instId, close_side, actual_sz,
             slTriggerPx=f"{sl_price:.2f}")
@@ -548,6 +552,7 @@ class WSMonitor:
         logger.info(f"✅ SL placed: algoId={sl_algo_id} triggerPx=${sl_price:.2f} side={close_side} sz={actual_sz}")
 
         # Verify SL is actually live on exchange
+        logger.info("Step 4: Verifying SL is live...")
         await asyncio.sleep(1)
         algos = await self._rest_exchange("get_algo_orders", self.cfg.instId, "conditional")
         sl_live = any(a.get("algoId") == sl_algo_id for a in algos)
@@ -560,6 +565,7 @@ class WSMonitor:
             return
 
         # SET TP (non-critical, SL already active)
+        logger.info(f"Step 5: Setting TP @ {tp_price:.2f}...")
         tp_result = await self._rest_exchange(
             "place_limit_order", self.cfg.instId, close_side, actual_sz,
             px=f"{tp_price:.2f}", reduceOnly=True)
@@ -572,6 +578,7 @@ class WSMonitor:
             await send_discord(f"{MSG_PREFIX}⚠️ TP设置失败，仅有SL保护")
 
         # Save position state + ensure OPEN trade log stays in sync
+        logger.info("Step 6: Saving position state...")
         pos_state = {
             "direction": direction, "entry_price": fill_price,
             "size": actual_sz, "sl_price": sl_price, "tp_price": tp_price,
@@ -861,15 +868,20 @@ class WSMonitor:
         while self._running:
             await asyncio.sleep(300)
             try:
-                # Watchdog: if no WS message for WATCHDOG_TIMEOUT, force restart
+                # Watchdog: if no WS message for WATCHDOG_TIMEOUT, force exit
+                # Must use os._exit because event loop may be frozen
                 idle_secs = time.time() - self._last_activity
                 if idle_secs > self.WATCHDOG_TIMEOUT:
-                    logger.error(f"WATCHDOG: No WS activity for {idle_secs:.0f}s — forcing restart!")
-                    await send_discord(
-                        f"🚨 OKX BB Watchdog: {idle_secs:.0f}秒无WS消息，强制重启",
-                        mention=True)
-                    self._running = False
-                    return
+                    logger.error(f"WATCHDOG: No WS activity for {idle_secs:.0f}s — FORCE EXIT!")
+                    # Sync send — event loop may be blocked, can't await
+                    try:
+                        _send_discord_sync(
+                            f"🚨 OKX BB Watchdog: {idle_secs:.0f}秒无WS消息，强制退出（systemd将自动重启）",
+                            mention=True)
+                    except Exception:
+                        pass
+                    import os
+                    os._exit(1)  # Hard exit — systemd Restart=always will bring us back
 
                 # Check for stale triggered state (limit order didn't fill)
                 if self._triggered_direction and self._triggered_at:
