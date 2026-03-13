@@ -134,28 +134,55 @@ def render_shared(r: dict) -> str:
                 oi = c['open_interest'] * c['mark_price']
                 lines.append(f"{cn}: {fr*100:.4f}%/h ({fr_a:+.1f}%年化) | OI {fmt_m(oi)}")
 
-    trades = r.get('recent_trades', [])
-    if trades:
-        from datetime import datetime, timezone, timedelta
-        _CST = timezone(timedelta(hours=8))
-        lines.append('\n**最近交易**')
-        for t in trades:
-            def _ft(ts):
-                return datetime.fromtimestamp(ts/1000, tz=timezone.utc).astimezone(_CST).strftime('%m-%d %H:%M')
-            d = 'L' if t['direction'] == 'LONG' else 'S'
-            if t['status'] == 'closed' and t['open_price']:
-                pnl = f" | {t['pnl']:+.2f}U" if t['pnl'] is not None else ''
-                lines.append(f"{t['coin']} {d} {_ft(t['open_time'])} {t['open_price']:,.0f}→{_ft(t['close_time'])} {t['close_price']:,.0f}{pnl}")
-            elif t['status'] == 'open':
-                lines.append(f"{t['coin']} {d} {_ft(t['open_time'])} {t['open_price']:,.0f}→持仓中")
-
     return '\n'.join(lines)
 
 
 def render_conclusion(btc: dict, eth: dict) -> str:
-    if btc['signal'] == 'HOLD' and eth['signal'] == 'HOLD':
-        return '**结论** BTC/ETH 均未突破，继续等待量能放大或区间突破。'
-    return f"**结论** 信号：BTC={btc['signal']} / ETH={eth['signal']}，按风控执行。"
+    lines = ['**结论**']
+
+    # Determine market regime
+    btc_vol = btc.get('volume_ratio', 0)
+    eth_vol = eth.get('volume_ratio', 0)
+    btc_b = btc.get('breakout', {})
+    eth_b = eth.get('breakout', {})
+
+    if btc['signal'] != 'HOLD' or eth['signal'] != 'HOLD':
+        sigs = []
+        if btc['signal'] != 'HOLD':
+            sigs.append(f"BTC {btc['signal']}")
+        if eth['signal'] != 'HOLD':
+            sigs.append(f"ETH {eth['signal']}")
+        lines.append(f"出现信号：{' / '.join(sigs)}，按风控参数执行。")
+        if btc['signal'] != 'HOLD' and 'suggested_stop' in btc:
+            lines.append(f"BTC 入场后关注 SL {btc['suggested_stop']:,.0f} / TP {btc['suggested_tp']:,.0f}。")
+        if eth['signal'] != 'HOLD' and 'suggested_stop' in eth:
+            lines.append(f"ETH 入场后关注 SL {eth['suggested_stop']:,.0f} / TP {eth['suggested_tp']:,.0f}。")
+    else:
+        # No signal — give context on why
+        has_vol = btc_vol > 1.25 or eth_vol > 1.25
+        near_breakout_up = btc_b.get('up') or eth_b.get('up')
+        near_breakout_dn = btc_b.get('down') or eth_b.get('down')
+
+        if has_vol and not (near_breakout_up or near_breakout_dn):
+            lines.append('量能放大但未触及区间边界，关注是否向上/下试探。')
+        elif (near_breakout_up or near_breakout_dn) and not has_vol:
+            lines.append('价格接近区间边界但量能不足，需放量确认才构成有效突破。')
+        else:
+            lines.append('BTC/ETH 均在区间内横盘，量能不足，无突破条件。')
+
+        # RSI context
+        btc_rsi = btc.get('rsi', 50)
+        eth_rsi = eth.get('rsi', 50)
+        if btc_rsi > 65 or eth_rsi > 65:
+            lines.append(f"RSI 偏高（BTC {btc_rsi:.0f} / ETH {eth_rsi:.0f}），短期追多风险增大。")
+        elif btc_rsi < 35 or eth_rsi < 35:
+            lines.append(f"RSI 偏低（BTC {btc_rsi:.0f} / ETH {eth_rsi:.0f}），关注超卖反弹机会。")
+        else:
+            lines.append(f"RSI 中性（BTC {btc_rsi:.0f} / ETH {eth_rsi:.0f}），继续等待方向选择。")
+
+        lines.append('策略：不追单，等放量突破信号。')
+
+    return '\n'.join(lines)
 
 
 def build_part1(btc: dict) -> str:
