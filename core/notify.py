@@ -38,7 +38,7 @@ def _load_notification_defaults() -> tuple[str, str]:
     channel_id = os.environ.get("OPENCLAW_DISCORD_CHANNEL_ID", "").strip()
     mentions = os.environ.get("OPENCLAW_DISCORD_MENTIONS", "").strip()
 
-    for env_name in ("OKX_BB_CONFIG_DIR", "LUCKYTRADER_CONFIG_DIR"):
+    for env_name in ("OKX_SOL_BB_CONFIG_DIR", "OKX_BB_CONFIG_DIR", "LUCKYTRADER_CONFIG_DIR"):
         cfg_dir = os.environ.get(env_name)
         if not cfg_dir:
             continue
