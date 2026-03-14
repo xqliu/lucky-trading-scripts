@@ -1,0 +1,5 @@
+# OKX API credentials for SOL BB system
+# Use a SEPARATE API key from ETH BB (different sub-account or key set)
+OKX_API_KEY=your_api_key_here
+OKX_SECRET_KEY=your_secret_key_here
+OKX_PASSPHRASE=your_passphrase_here

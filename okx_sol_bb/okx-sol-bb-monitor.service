@@ -1,0 +1,20 @@
+[Unit]
+Description=OKX SOL BB Mean-Reversion Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xqianliu
+WorkingDirectory=/home/xqianliu/.openclaw/workspace/trading/okx_sol_bb
+ExecStart=/home/xqianliu/.openclaw/workspace/trading/okx_sol_bb/.venv/bin/python -m okx_sol_bb
+ExecStop=/home/xqianliu/.openclaw/workspace/trading/okx_sol_bb/.venv/bin/python -m okx_sol_bb.cleanup
+Environment=OKX_SOL_BB_CONFIG_DIR=/home/xqianliu/.openclaw/workspace/trading/okx_sol_bb/config
+Environment=PYTHONPATH=/home/xqianliu/.openclaw/workspace/trading/repos/lucky-trading-scripts
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

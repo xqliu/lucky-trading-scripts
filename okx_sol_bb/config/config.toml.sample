@@ -1,0 +1,26 @@
+# OKX SOL BB Mean-Reversion System — Config
+# Validated: 760-day OKX 1m backtest, OOS 365d: +14.8%, MDD 10%, WR 76.3%
+# Parameters: BB(14, 3.0), TP=2%, SL=5%, MaxHold=48h
+
+[strategy]
+bb_period = 14          # BB lookback (7h on 30m bars)
+bb_multiplier = 3.0     # 3σ — extreme deviation only
+
+[risk]
+take_profit_pct = 0.02  # 2% — validated in OOS
+stop_loss_pct = 0.05    # 5% — R:R requires 73%+ win rate
+max_hold_bars = 96      # 48h on 30m candles
+position_ratio = 0.30
+max_single_loss = 10.0  # $10
+leverage = 5
+
+[fees]
+taker_fee = 0.0005      # OKX taker 5 bps (VIP0)
+maker_fee = 0.0002      # OKX maker 2 bps (VIP0)
+
+[exchange]
+coin = "SOL"
+instId = "SOL-USDT-SWAP"
+
+[notifications]
+discord_channel_id = ""
