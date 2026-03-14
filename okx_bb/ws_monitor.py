@@ -947,16 +947,58 @@ class WSMonitor:
                     has_sl = any(a.get("slTriggerPx") for a in (algos or []))
                     if not has_sl:
                         logger.error("PERIODIC: Position has NO SL on exchange! Re-setting...")
-                        d = local_pos.get("direction", "SHORT")
-                        ap = local_pos.get("entry_price", 0)
-                        sz = local_pos.get("size", "0")
+
+                        # BUG FIX: Use EXCHANGE position size, not local size
+                        # Local size may be stale after partial fills
+                        positions = await self._rest_exchange("get_positions", self.cfg.instId)
+                        if not positions or not any(float(p.get("pos", 0)) != 0 for p in positions):
+                            # Position already closed on exchange — sync local state
+                            logger.warning("PERIODIC: SL missing but position already closed on exchange")
+                            await self._check_position_closed()
+                            continue
+
+                        pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
+                        exchange_size = abs(float(pos_info.get("pos", 0)))
+                        exchange_dir = "LONG" if float(pos_info.get("pos", 0)) > 0 else "SHORT"
+                        exchange_avg = float(pos_info.get("avgPx", 0) or 0)
+
+                        # Sync local state if direction/size diverged
+                        local_dir = local_pos.get("direction", "SHORT")
+                        local_sz = float(local_pos.get("size", 0) or 0)
+                        if exchange_dir != local_dir or abs(exchange_size - local_sz) > 0.001:
+                            logger.error(f"PERIODIC: State mismatch! local={local_dir} {local_sz} vs exchange={exchange_dir} {exchange_size}")
+                            self.executor.reconcile_position_from_exchange(source="periodic_sl_mismatch")
+                            local_pos = self.executor.load_position()
+                            if not local_pos:
+                                continue
+
+                        d = exchange_dir
+                        ap = exchange_avg
+                        sz = f"{exchange_size:.2f}"
                         close_side = "sell" if d == "LONG" else "buy"
                         if d == "LONG":
                             sl_p = ap * (1 - self.cfg.risk.stop_loss_pct)
-                            tp_p = ap * (1 + self.cfg.risk.take_profit_pct)
                         else:
                             sl_p = ap * (1 + self.cfg.risk.stop_loss_pct)
-                            tp_p = ap * (1 - self.cfg.risk.take_profit_pct)
+
+                        # BUG FIX: Check if market already past SL trigger
+                        ticker = await self._rest_exchange("get_ticker", self.cfg.instId)
+                        if ticker:
+                            current_price = ticker.get("last", 0)
+                            if d == "LONG" and current_price <= sl_p:
+                                logger.error(f"PERIODIC: Price {current_price} already below SL {sl_p:.2f} — market close instead")
+                                await self._rest_exchange("place_market_order",
+                                    self.cfg.instId, close_side, sz, True)
+                                await send_discord(f"{MSG_PREFIX}🚨 价格已穿过 SL → 市价平仓", mention=True)
+                                self.executor.save_position(None)
+                                continue
+                            elif d == "SHORT" and current_price >= sl_p:
+                                logger.error(f"PERIODIC: Price {current_price} already above SL {sl_p:.2f} — market close instead")
+                                await self._rest_exchange("place_market_order",
+                                    self.cfg.instId, close_side, sz, True)
+                                await send_discord(f"{MSG_PREFIX}🚨 价格已穿过 SL → 市价平仓", mention=True)
+                                self.executor.save_position(None)
+                                continue
 
                         sl_result = await self._rest_exchange(
                             "place_stop_order", self.cfg.instId, close_side, sz,
@@ -965,10 +1007,14 @@ class WSMonitor:
                         if sl_result and sl_result.get("code") == "0" and sl_result.get("data"):
                             sl_algo_id = sl_result["data"][0].get("algoId", "")
                             local_pos["sl_algo_id"] = sl_algo_id
+                            local_pos["sl_price"] = sl_p
+                            local_pos["size"] = sz
+                            local_pos["direction"] = d
+                            local_pos["entry_price"] = ap
                             self.executor.save_position(local_pos)
-                            logger.info(f"SL re-set OK: algoId={sl_algo_id} triggerPx={sl_p:.2f}")
+                            logger.info(f"SL re-set OK: algoId={sl_algo_id} triggerPx={sl_p:.2f} sz={sz}")
                             await send_discord(f"{MSG_PREFIX}⚠️ 定期检查发现 SL 丢失 → 已重设\n"
-                                         f"SL: ${sl_p:.2f}", mention=True)
+                                         f"SL: ${sl_p:.2f} sz={sz}", mention=True)
                         else:
                             logger.error(f"SL re-set FAILED: {sl_result} — EMERGENCY CLOSE!")
                             await self._rest_exchange("place_market_order",
