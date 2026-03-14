@@ -26,6 +26,14 @@ def render_okx_raw() -> str:
     return buf.getvalue().strip()
 
 
+def render_okx_sol_raw() -> str:
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        from okx_sol_bb.render_status_block import main as sol_main
+        sol_main()
+    return buf.getvalue().strip()
+
+
 def fmt_m(v: float) -> str:
     if abs(v) >= 1e9:
         return f"${v/1e9:.1f}B"
@@ -87,6 +95,39 @@ def render_okx() -> str:
         status = ''
 
     return f"**OKX** ${acct} | {pos_str}{sl_tp}{status}"
+
+
+def render_okx_sol() -> str:
+    raw = render_okx_sol_raw()
+    import re
+    acct_m = re.search(r'\*\*账户\*\*: \$([0-9.]+)', raw)
+    acct = acct_m.group(1) if acct_m else '?'
+
+    sol_m = re.search(r'\*\*SOL\*\*: \$([0-9.]+)', raw)
+    sol_price = sol_m.group(1) if sol_m else '?'
+
+    bb_m = re.search(r'\*\*BB\([^)]+\)\*\*: ([0-9.]+) - ([0-9.]+) - ([0-9.]+)', raw)
+    bb_str = f" | BB {bb_m.group(1)}-{bb_m.group(3)}" if bb_m else ""
+
+    if '当前持仓**: 无' in raw or '**当前持仓**: 无' in raw:
+        pos_str = '空仓'
+    else:
+        pos_m = re.search(r'- (\w+ \w+ [0-9.]+张 @ \$[0-9.]+ \| 未实现: \$[^\n]+)', raw)
+        pos_str = pos_m.group(1) if pos_m else '有持仓'
+
+    sl_m = re.search(r'SL: \$([0-9.]+)', raw)
+    tp_m = re.search(r'TP: \$([0-9.]+)', raw)
+    sl_tp = ''
+    if sl_m and tp_m:
+        sl_tp = f" | SL {sl_m.group(1)} TP {tp_m.group(1)}"
+
+    status = ''
+    if '✅' in raw:
+        status = ' | ✅'
+    elif '🚨' in raw:
+        status = ' | 🚨不一致'
+
+    return f"**OKX SOL** ${acct} | SOL ${sol_price}{bb_str} | {pos_str}{sl_tp}{status}"
 
 
 def render_coin(r: dict) -> str:
@@ -191,6 +232,7 @@ def build_part1(btc: dict) -> str:
         '',
         render_hl(),
         render_okx(),
+        render_okx_sol(),
         '',
         render_coin(btc),
     ])
