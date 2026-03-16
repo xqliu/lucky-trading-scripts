@@ -573,6 +573,9 @@ class WSMonitor:
                         local_sz = float(local_pos.get("size", 0) or 0)
                         if exchange_dir != local_dir or abs(exchange_size - local_sz) > 0.001:
                             logger.error(f"PERIODIC: Mismatch local={local_dir} {local_sz} vs exchange={exchange_dir} {exchange_size}")
+                            await send_discord(
+                                f"🚨 SOL BB 状态不一致！本地={local_dir} {local_sz} vs 交易所={exchange_dir} {exchange_size}，自动同步中",
+                                mention=True)
                             self.executor.reconcile_position_from_exchange(source="periodic_sl_mismatch")
                             local_pos = self.executor.load_position()
                             if not local_pos:
