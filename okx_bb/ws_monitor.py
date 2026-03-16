@@ -782,7 +782,14 @@ class WSMonitor:
         """Close-confirm mode: enter on candle close when prev close is outside BB.
 
         No trigger orders — market order entry when conditions are met.
+        Lock released before _on_entry_filled (which acquires it internally).
         """
+        # Phase 1: signal check + market order (under lock)
+        dir_label = None
+        ord_id = None
+        sz = None
+        prev_close = None
+
         async with self._order_lock:
             if self._triggered_direction or self._entry_in_progress:
                 return
@@ -836,23 +843,26 @@ class WSMonitor:
             if result.get("code") == "0" and result.get("data"):
                 ord_id = result["data"][0].get("ordId", "")
                 logger.info(f"Market order placed: {direction} sz={sz} ordId={ord_id}")
-                # Retry up to 3 times to detect position (OKX may be slow)
-                for attempt in range(3):
-                    await asyncio.sleep(2 if attempt == 0 else 3)
-                    positions = await self._rest_exchange("get_positions", self.cfg.instId)
-                    if positions and any(float(p.get("pos", 0)) != 0 for p in positions):
-                        pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
-                        fill_price = float(pos_info.get("avgPx", prev_close))
-                        fill_sz = f"{abs(float(pos_info.get('pos', 0))):.2f}"
-                        await self._on_entry_filled(dir_label, fill_price, fill_sz)
-                        break
-                    logger.warning(f"Position check attempt {attempt+1}/3: not found yet")
-                else:
-                    logger.error(f"Market order sent but no position after 3 checks! ordId={ord_id}")
-                    await send_discord(f"{MSG_PREFIX}🚨 市价单已发但3次检查无持仓 ordId={ord_id}，需手动检查", mention=True)
             else:
                 logger.error(f"Market order failed: {result}")
                 await send_discord(f"{MSG_PREFIX}⚠️ 市价开仓失败: {result}", mention=True)
+                return
+
+        # Phase 2: wait for fill + _on_entry_filled (lock released)
+        if ord_id and dir_label:
+            for attempt in range(3):
+                await asyncio.sleep(2 if attempt == 0 else 3)
+                positions = await self._rest_exchange("get_positions", self.cfg.instId)
+                if positions and any(float(p.get("pos", 0)) != 0 for p in positions):
+                    pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
+                    fill_price = float(pos_info.get("avgPx", prev_close))
+                    fill_sz = f"{abs(float(pos_info.get('pos', 0))):.2f}"
+                    await self._on_entry_filled(dir_label, fill_price, fill_sz)
+                    break
+                logger.warning(f"Position check attempt {attempt+1}/3: not found yet")
+            else:
+                logger.error(f"Market order sent but no position after 3 checks! ordId={ord_id}")
+                await send_discord(f"{MSG_PREFIX}🚨 市价单已发但3次检查无持仓 ordId={ord_id}，需手动检查", mention=True)
 
     async def _check_position_closed(self):
         """Check if SL/TP hit. If position closed, place new triggers."""
