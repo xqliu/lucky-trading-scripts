@@ -251,8 +251,16 @@ class WSMonitor:
                         break
             if fill_price <= 0:
                 close_side = "sell" if direction == "LONG" else "buy"
+                # Use exchange size if available (fill_sz from WS may be stale)
+                close_sz = fill_sz
+                if positions:
+                    for p in positions:
+                        pv = abs(float(p.get("pos", 0)))
+                        if pv > 0:
+                            close_sz = f"{pv:.2f}"
+                            break
                 await self._rest_exchange("place_market_order",
-                    self.cfg.instId, close_side, fill_sz, True)
+                    self.cfg.instId, close_side, close_sz, True)
                 await send_discord("🚨 SOL BB 入场价格无效，紧急平仓", mention=True)
                 return
 
@@ -397,16 +405,20 @@ class WSMonitor:
             if result.get("code") == "0" and result.get("data"):
                 ord_id = result["data"][0].get("ordId", "")
                 logger.info(f"Market order placed: {direction} sz={sz} ordId={ord_id}")
-                await asyncio.sleep(2)
-                positions = await self._rest_exchange("get_positions", self.cfg.instId)
-                if positions and any(float(p.get("pos", 0)) != 0 for p in positions):
-                    pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
-                    fill_price = float(pos_info.get("avgPx", closes[-1]))
-                    fill_sz = f"{abs(float(pos_info.get('pos', 0))):.2f}"
-                    await self._on_entry_filled(signal, fill_price, fill_sz)
+                # Retry up to 3 times to detect position (OKX may be slow)
+                for attempt in range(3):
+                    await asyncio.sleep(2 if attempt == 0 else 3)
+                    positions = await self._rest_exchange("get_positions", self.cfg.instId)
+                    if positions and any(float(p.get("pos", 0)) != 0 for p in positions):
+                        pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
+                        fill_price = float(pos_info.get("avgPx", closes[-1]))
+                        fill_sz = f"{abs(float(pos_info.get('pos', 0))):.2f}"
+                        await self._on_entry_filled(signal, fill_price, fill_sz)
+                        break
+                    logger.warning(f"Position check attempt {attempt+1}/3: not found yet")
                 else:
-                    logger.error(f"Market order sent but no position! ordId={ord_id}")
-                    await send_discord(f"⚠️ SOL BB 市价单无持仓 ordId={ord_id}", mention=True)
+                    logger.error(f"Market order sent but no position after 3 checks! ordId={ord_id}")
+                    await send_discord(f"🚨 SOL BB 市价单已发但3次检查无持仓 ordId={ord_id}，需手动检查", mention=True)
             else:
                 logger.error(f"Market order failed: {result}")
                 await send_discord(f"⚠️ SOL BB 市价开仓失败: {result}", mention=True)
@@ -594,8 +606,10 @@ class WSMonitor:
                         ticker = await self._rest_exchange("get_ticker", self.cfg.instId)
                         if ticker:
                             current_price = ticker.get("last", 0)
-                            if (d == "LONG" and current_price <= sl_p) or \
-                               (d == "SHORT" and current_price >= sl_p):
+                            if not current_price or current_price <= 0:
+                                logger.warning("Ticker price invalid, skipping SL breach check")
+                            elif (d == "LONG" and current_price <= sl_p) or \
+                                 (d == "SHORT" and current_price >= sl_p):
                                 logger.error(f"PERIODIC: Price {current_price} past SL {sl_p:.2f} — market close")
                                 await self._rest_exchange("place_market_order",
                                     self.cfg.instId, close_side, sz, True)
@@ -628,8 +642,61 @@ class WSMonitor:
                         if self._entry_in_progress:
                             continue
                         logger.error("PERIODIC: Orphan detected!")
-                        self.executor.reconcile_position_from_exchange(source="periodic_orphan")
-                        await send_discord("⚠️ SOL BB 发现孤立仓位，已恢复", mention=True)
+
+                        # Check if orphan has SL protection
+                        algos = await self._rest_exchange("get_algo_orders", self.cfg.instId, "conditional")
+                        has_sl = any(a.get("slTriggerPx") for a in (algos or []))
+
+                        if not has_sl:
+                            # No SL — set SL/TP or emergency close
+                            pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
+                            pv = float(pos_info.get("pos", 0))
+                            d = "LONG" if pv > 0 else "SHORT"
+                            ap = float(pos_info.get("avgPx", 0))
+                            pos_size = abs(pv)
+                            close_side = "sell" if d == "LONG" else "buy"
+
+                            if d == "LONG":
+                                sl_p = ap * (1 - self.cfg.risk.stop_loss_pct)
+                                tp_p = ap * (1 + self.cfg.risk.take_profit_pct)
+                            else:
+                                sl_p = ap * (1 + self.cfg.risk.stop_loss_pct)
+                                tp_p = ap * (1 - self.cfg.risk.take_profit_pct)
+
+                            sl_result = await self._rest_exchange(
+                                "place_stop_order", self.cfg.instId, close_side, f"{pos_size:.2f}",
+                                slTriggerPx=f"{sl_p:.2f}")
+
+                            if sl_result.get("code") != "0" or not sl_result.get("data"):
+                                logger.error("Orphan SL re-set FAILED — emergency close!")
+                                await self._rest_exchange("place_market_order",
+                                    self.cfg.instId, close_side, f"{pos_size:.2f}", True)
+                                await send_discord("🚨 SOL BB 孤立仓位无SL且重设失败 → 紧急平仓", mention=True)
+                                self.executor.save_position(None)
+                            else:
+                                sl_algo_id = sl_result["data"][0].get("algoId", "")
+                                tp_result = await self._rest_exchange(
+                                    "place_limit_order", self.cfg.instId, close_side, f"{pos_size:.2f}",
+                                    px=f"{tp_p:.2f}", reduceOnly=True)
+                                tp_id = tp_result.get("data", [{}])[0].get("ordId", "") if tp_result.get("code") == "0" else ""
+
+                                pos_state = {
+                                    "direction": d, "entry_price": ap,
+                                    "size": f"{pos_size:.2f}", "sl_price": sl_p, "tp_price": tp_p,
+                                    "sl_algo_id": sl_algo_id, "tp_order_id": tp_id,
+                                    "entry_time": datetime.now(timezone.utc).isoformat(),
+                                    "entry_bar_count": 0,
+                                }
+                                self.executor.save_position(pos_state)
+                                self.executor._append_open_trade_log_if_missing(pos_state, source="periodic_orphan_reset_sl")
+                                await send_discord(
+                                    f"⚠️ SOL BB 孤立仓位已恢复+设SL/TP\n"
+                                    f"{d} {pos_size} @ ${ap:.2f}\nSL: ${sl_p:.2f} / TP: ${tp_p:.2f}",
+                                    mention=True)
+                        else:
+                            # Has SL — just reconcile state
+                            self.executor.reconcile_position_from_exchange(source="periodic_orphan")
+                            await send_discord("⚠️ SOL BB 发现孤立仓位（有SL），已恢复", mention=True)
 
             except Exception as e:
                 logger.error(f"Periodic error: {e}", exc_info=True)

@@ -486,8 +486,16 @@ class WSMonitor:
             if fill_price <= 0:
                 logger.error("CRITICAL: No valid price — emergency close!")
                 close_side = "sell" if direction == "LONG" else "buy"
+                # Use exchange size if available (fill_sz from WS may be stale)
+                close_sz = fill_sz
+                if positions:
+                    for p in positions:
+                        pv = abs(float(p.get("pos", 0)))
+                        if pv > 0:
+                            close_sz = f"{pv:.2f}"
+                            break
                 await self._rest_exchange("place_market_order",
-                    self.cfg.instId, close_side, fill_sz, True)
+                    self.cfg.instId, close_side, close_sz, True)
                 await send_discord(f"{MSG_PREFIX}🚨 入场价格无效，紧急平仓", mention=True)
                 return
 
@@ -828,18 +836,20 @@ class WSMonitor:
             if result.get("code") == "0" and result.get("data"):
                 ord_id = result["data"][0].get("ordId", "")
                 logger.info(f"Market order placed: {direction} sz={sz} ordId={ord_id}")
-                # Wait for fill then process
-                await asyncio.sleep(2)
-                # Check fill
-                positions = await self._rest_exchange("get_positions", self.cfg.instId)
-                if positions and any(float(p.get("pos", 0)) != 0 for p in positions):
-                    pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
-                    fill_price = float(pos_info.get("avgPx", prev_close))
-                    fill_sz = f"{abs(float(pos_info.get('pos', 0))):.2f}"
-                    await self._on_entry_filled(dir_label, fill_price, fill_sz)
+                # Retry up to 3 times to detect position (OKX may be slow)
+                for attempt in range(3):
+                    await asyncio.sleep(2 if attempt == 0 else 3)
+                    positions = await self._rest_exchange("get_positions", self.cfg.instId)
+                    if positions and any(float(p.get("pos", 0)) != 0 for p in positions):
+                        pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
+                        fill_price = float(pos_info.get("avgPx", prev_close))
+                        fill_sz = f"{abs(float(pos_info.get('pos', 0))):.2f}"
+                        await self._on_entry_filled(dir_label, fill_price, fill_sz)
+                        break
+                    logger.warning(f"Position check attempt {attempt+1}/3: not found yet")
                 else:
-                    logger.error(f"Market order sent but no position found! ordId={ord_id}")
-                    await send_discord(f"{MSG_PREFIX}⚠️ 市价单发出但未检测到持仓 ordId={ord_id}", mention=True)
+                    logger.error(f"Market order sent but no position after 3 checks! ordId={ord_id}")
+                    await send_discord(f"{MSG_PREFIX}🚨 市价单已发但3次检查无持仓 ordId={ord_id}，需手动检查", mention=True)
             else:
                 logger.error(f"Market order failed: {result}")
                 await send_discord(f"{MSG_PREFIX}⚠️ 市价开仓失败: {result}", mention=True)
@@ -988,7 +998,9 @@ class WSMonitor:
                         ticker = await self._rest_exchange("get_ticker", self.cfg.instId)
                         if ticker:
                             current_price = ticker.get("last", 0)
-                            if d == "LONG" and current_price <= sl_p:
+                            if not current_price or current_price <= 0:
+                                logger.warning("Ticker price invalid, skipping SL breach check")
+                            elif d == "LONG" and current_price <= sl_p:
                                 logger.error(f"PERIODIC: Price {current_price} already below SL {sl_p:.2f} — market close instead")
                                 await self._rest_exchange("place_market_order",
                                     self.cfg.instId, close_side, sz, True)
