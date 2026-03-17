@@ -437,6 +437,7 @@ class TestOpenPosition:
         ex.client.place_market_order.return_value = {"code": "0", "data": [{"ordId": "ord1"}]}
         ex.client.get_order_detail.return_value = {"avgPx": "150.0", "accFillSz": "1"}
         ex.client.place_stop_order.return_value = {"code": "0", "data": [{"algoId": "sl1"}]}
+        ex.client.get_algo_orders.return_value = [{"algoId": "sl1", "slTriggerPx": "142.50"}]
         ex.client.place_limit_order.return_value = {"code": "0", "data": [{"ordId": "tp1"}]}
         ex.save_position = MagicMock()
 
@@ -460,6 +461,7 @@ class TestOpenPosition:
         ex.client.place_market_order.return_value = {"code": "0", "data": [{"ordId": "ord1"}]}
         ex.client.get_order_detail.return_value = {"avgPx": "150.0", "accFillSz": "1"}
         ex.client.place_stop_order.return_value = {"code": "0", "data": [{"algoId": "sl1"}]}
+        ex.client.get_algo_orders.return_value = [{"algoId": "sl1", "slTriggerPx": "157.50"}]
         ex.client.place_limit_order.return_value = {"code": "0", "data": [{"ordId": "tp1"}]}
         ex.save_position = MagicMock()
 
@@ -482,6 +484,7 @@ class TestOpenPosition:
         ex.client.place_market_order.return_value = {"code": "0", "data": [{"ordId": "ord1"}]}
         ex.client.get_order_detail.return_value = {"avgPx": "150.0", "accFillSz": "1"}
         ex.client.place_stop_order.return_value = {"code": "0", "data": [{"algoId": "sl1"}]}
+        ex.client.get_algo_orders.return_value = [{"algoId": "sl1", "slTriggerPx": "142.50"}]
         ex.client.place_limit_order.return_value = {"code": "1", "msg": "tp fail"}
         ex.save_position = MagicMock()
 

@@ -634,7 +634,21 @@ class WSMonitor:
                             slTriggerPx=f"{sl_p:.2f}")
 
                         if sl_result and sl_result.get("code") == "0" and sl_result.get("data"):
-                            local_pos["sl_algo_id"] = sl_result["data"][0].get("algoId", "")
+                            sl_algo_id = sl_result["data"][0].get("algoId", "")
+
+                            # Verify SL is actually live before saving local state
+                            await asyncio.sleep(1)
+                            verify_algos = await self._rest_exchange("get_algo_orders", self.cfg.instId, "conditional")
+                            sl_live = any(a.get("algoId") == sl_algo_id for a in (verify_algos or []))
+                            if not sl_live:
+                                logger.error(f"SL re-set {sl_algo_id} not live after placement — emergency close!")
+                                await self._rest_exchange("place_market_order",
+                                    self.cfg.instId, close_side, sz, True)
+                                await send_discord("🚨 SOL BB SL 重设后未激活 → 紧急平仓", mention=True)
+                                self.executor.save_position(None)
+                                continue
+
+                            local_pos["sl_algo_id"] = sl_algo_id
                             local_pos["sl_price"] = sl_p
                             local_pos["size"] = sz
                             local_pos["direction"] = d

@@ -204,30 +204,15 @@ def test_eth_periodic_sl_verifies_live():
 
     source = inspect.getsource(WSMonitor._periodic_check)
 
-    # Find the periodic SL re-set section: place_stop_order → save_position
-    # Between these two, there SHOULD be a get_algo_orders verification call
-    lines = source.split('\n')
-    place_sl_line = None
-    save_pos_line = None
-    verify_line = None
+    # Find the periodic SL re-set section: place_stop_order → verify get_algo_orders → save_position
+    place_idx = source.find('"place_stop_order", self.cfg.instId, close_side, sz')
+    save_idx = source.find('self.executor.save_position(local_pos)', place_idx)
+    verify_idx = source.find('verify_algos = await self._rest_exchange("get_algo_orders", self.cfg.instId, "conditional")', place_idx)
 
-    for i, line in enumerate(lines):
-        if 'place_stop_order' in line and 'sl_p' in line:
-            place_sl_line = i
-        if place_sl_line and not save_pos_line:
-            if 'save_position' in line and 'local_pos' in line:
-                save_pos_line = i
-                break
-            if 'get_algo_orders' in line:
-                verify_line = i
-
-    assert place_sl_line is not None, "Could not find place_stop_order in periodic check"
-    assert save_pos_line is not None, "Could not find save_position after place_stop_order"
-    # CORRECT: there should be a get_algo_orders verification between place and save
-    assert verify_line is not None, (
-        f"No get_algo_orders verification between place_stop_order (line {place_sl_line}) "
-        f"and save_position (line {save_pos_line}) in periodic SL re-set path"
-    )
+    assert place_idx != -1, "Could not find periodic place_stop_order call"
+    assert save_idx != -1, "Could not find save_position(local_pos) after periodic place_stop_order"
+    assert verify_idx != -1, "No get_algo_orders verification after periodic place_stop_order"
+    assert place_idx < verify_idx < save_idx, "Verification must happen between place_stop_order and save_position"
 
 
 def test_sol_periodic_sl_verifies_live():
@@ -236,27 +221,14 @@ def test_sol_periodic_sl_verifies_live():
     from okx_sol_bb.ws_monitor import WSMonitor
 
     source = inspect.getsource(WSMonitor._periodic_check)
-    lines = source.split('\n')
-    place_sl_line = None
-    save_pos_line = None
-    verify_line = None
+    place_idx = source.find('"place_stop_order", self.cfg.instId, close_side, sz')
+    save_idx = source.find('self.executor.save_position(local_pos)', place_idx)
+    verify_idx = source.find('verify_algos = await self._rest_exchange("get_algo_orders", self.cfg.instId, "conditional")', place_idx)
 
-    for i, line in enumerate(lines):
-        if 'place_stop_order' in line and 'sl_p' in line:
-            place_sl_line = i
-        if place_sl_line and not save_pos_line:
-            if 'save_position' in line:
-                save_pos_line = i
-                break
-            if 'get_algo_orders' in line:
-                verify_line = i
-
-    assert place_sl_line is not None
-    assert save_pos_line is not None
-    assert verify_line is not None, (
-        f"No get_algo_orders verification between place_stop_order (line {place_sl_line}) "
-        f"and save_position (line {save_pos_line}) in SOL periodic SL re-set path"
-    )
+    assert place_idx != -1, "Could not find periodic place_stop_order call"
+    assert save_idx != -1, "Could not find save_position(local_pos) after periodic place_stop_order"
+    assert verify_idx != -1, "No get_algo_orders verification after periodic place_stop_order"
+    assert place_idx < verify_idx < save_idx, "Verification must happen between place_stop_order and save_position"
 
 
 # ============================================================================

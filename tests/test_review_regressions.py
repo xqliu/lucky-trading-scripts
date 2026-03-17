@@ -354,11 +354,15 @@ class TestBug3_TickerPriceZero:
         m.executor.check_position.return_value = None
 
         calls = {}
+        algo_checks = [0]
 
         async def mock_rest(method, *a, **kw):
             calls.setdefault(method, []).append((a, kw))
             if method == "get_algo_orders":
-                return []  # No SL
+                algo_checks[0] += 1
+                if algo_checks[0] == 1:
+                    return []  # first check: SL missing
+                return [{"algoId": "new_sl", "slTriggerPx": "142.50"}]  # second check: live after re-set
             if method == "get_positions":
                 return [{"pos": "1.00", "avgPx": "150.0"}]
             if method == "get_ticker":
@@ -401,11 +405,15 @@ class TestBug3_TickerPriceZero:
         m.executor.check_position.return_value = None
 
         calls = {}
+        algo_checks = [0]
 
         async def mock_rest(method, *a, **kw):
             calls.setdefault(method, []).append((a, kw))
             if method == "get_algo_orders":
-                return []
+                algo_checks[0] += 1
+                if algo_checks[0] == 1:
+                    return []
+                return [{"algoId": "new_sl_eth", "slTriggerPx": "1960.00"}]
             if method == "get_positions":
                 return [{"pos": "0.10", "avgPx": "2000.0"}]
             if method == "get_ticker":
