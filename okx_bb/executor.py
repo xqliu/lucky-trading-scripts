@@ -346,12 +346,17 @@ class BBExecutor:
 
         sl_algo_id = sl_result["data"][0].get("algoId", "") if sl_result["data"] else ""
 
-        # Verify SL is actually live on exchange
-        time.sleep(1)
-        algos = self.client.get_algo_orders(self.instId, "conditional")
-        sl_live = any(a.get("algoId") == sl_algo_id for a in (algos or []))
+        # Verify SL is actually live on exchange (retry to handle OKX eventual consistency)
+        sl_live = False
+        for delay in (1, 2, 2):
+            time.sleep(delay)
+            algos = self.client.get_algo_orders(self.instId, "conditional")
+            if any(a.get("algoId") == sl_algo_id for a in (algos or [])):
+                sl_live = True
+                break
+            logger.warning(f"SL {sl_algo_id} not visible yet, retrying...")
         if not sl_live:
-            logger.error(f"SL {sl_algo_id} not live after placement — emergency close!")
+            logger.error(f"SL {sl_algo_id} not live after 3 checks — emergency close!")
             self._emergency_close(close_side, sz)
             send_discord(f"🚨 OKX BB: 止损未激活，紧急平仓", mention=True)
             return False

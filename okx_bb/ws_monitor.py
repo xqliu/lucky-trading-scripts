@@ -1032,15 +1032,22 @@ class WSMonitor:
                         if sl_result and sl_result.get("code") == "0" and sl_result.get("data"):
                             sl_algo_id = sl_result["data"][0].get("algoId", "")
 
-                            # Verify SL is actually live before saving local state
-                            await asyncio.sleep(1)
-                            verify_algos = await self._rest_exchange("get_algo_orders", self.cfg.instId, "conditional")
-                            sl_live = any(a.get("algoId") == sl_algo_id for a in (verify_algos or []))
+                            # Verify SL is actually live before saving local state (retry)
+                            sl_live = False
+                            for _delay in (1, 2, 2):
+                                await asyncio.sleep(_delay)
+                                verify_algos = await self._rest_exchange("get_algo_orders", self.cfg.instId, "conditional")
+                                if any(a.get("algoId") == sl_algo_id for a in (verify_algos or [])):
+                                    sl_live = True
+                                    break
+                                logger.warning(f"SL re-set {sl_algo_id} not visible yet, retrying...")
                             if not sl_live:
-                                logger.error(f"SL re-set {sl_algo_id} not live after placement — emergency close!")
-                                await self._rest_exchange("place_market_order",
-                                    self.cfg.instId, close_side, sz, True)
-                                await send_discord(f"{MSG_PREFIX}🚨 SL 重设后未激活 → 紧急平仓", mention=True)
+                                logger.error(f"SL re-set {sl_algo_id} not live after 3 checks — emergency close!")
+                                ok = await asyncio.to_thread(self.executor._emergency_close, close_side, sz)
+                                if not ok:
+                                    await send_discord(f"{MSG_PREFIX}🚨🚨 SL 重设未激活 + 紧急平仓失败！需手动干预", mention=True)
+                                else:
+                                    await send_discord(f"{MSG_PREFIX}🚨 SL 重设后未激活 → 紧急平仓", mention=True)
                                 self.executor.save_position(None)
                                 if self.cfg.execution.mode != "close_confirm_buffer":
                                     await self._atomic_cancel_and_place()
