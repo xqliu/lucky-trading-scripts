@@ -287,6 +287,16 @@ class SolBBExecutor:
 
         sl_algo_id = sl_result["data"][0].get("algoId", "")
 
+        # Verify SL is actually live on exchange
+        time.sleep(1)
+        algos = self.client.get_algo_orders(self.instId, "conditional")
+        sl_live = any(a.get("algoId") == sl_algo_id for a in (algos or []))
+        if not sl_live:
+            logger.error(f"SL {sl_algo_id} not live after placement — emergency close!")
+            self._emergency_close(close_side, sz)
+            send_discord(f"🚨 OKX SOL BB: 止损未激活，紧急平仓", mention=True)
+            return False
+
         # TP
         tp_result = self.client.place_limit_order(
             self.instId, close_side, sz, px=f"{tp_price:.2f}", reduceOnly=True)
@@ -317,13 +327,25 @@ class SolBBExecutor:
         return True
 
     def _emergency_close(self, side: str, sz: str) -> bool:
+        """Emergency market close — uses exchange size instead of caller sz."""
         for attempt in range(3):
             positions = self.client.get_positions(self.instId)
             if positions is not None and not any(float(p.get("pos", 0)) != 0 for p in positions):
                 self.save_position(None)
                 return True
 
-            result = self.client.place_market_order(self.instId, side, sz, reduceOnly=True)
+            # Use exchange size if available (caller sz may be stale after partial fill)
+            actual_sz = sz
+            if positions:
+                for p in positions:
+                    pv = abs(float(p.get("pos", 0)))
+                    if pv > 0:
+                        actual_sz = f"{pv:.2f}"
+                        if actual_sz != sz:
+                            logger.warning(f"Size mismatch: caller={sz} exchange={actual_sz}, using exchange")
+                        break
+
+            result = self.client.place_market_order(self.instId, side, actual_sz, reduceOnly=True)
             if result.get("code") == "0":
                 time.sleep(2)
                 positions = self.client.get_positions(self.instId)
@@ -404,9 +426,9 @@ class SolBBExecutor:
             if fill_price > 0:
                 sl = pos.get("sl_price", 0)
                 tp = pos.get("tp_price", 0)
-                if sl and abs(fill_price - sl) / sl < 0.005:
+                if sl and abs(fill_price - sl) / sl < 0.015:
                     return "sl"
-                if tp and abs(fill_price - tp) / tp < 0.005:
+                if tp and abs(fill_price - tp) / tp < 0.015:
                     return "tp"
 
         return "unknown"

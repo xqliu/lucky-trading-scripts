@@ -346,6 +346,16 @@ class BBExecutor:
 
         sl_algo_id = sl_result["data"][0].get("algoId", "") if sl_result["data"] else ""
 
+        # Verify SL is actually live on exchange
+        time.sleep(1)
+        algos = self.client.get_algo_orders(self.instId, "conditional")
+        sl_live = any(a.get("algoId") == sl_algo_id for a in (algos or []))
+        if not sl_live:
+            logger.error(f"SL {sl_algo_id} not live after placement — emergency close!")
+            self._emergency_close(close_side, sz)
+            send_discord(f"🚨 OKX BB: 止损未激活，紧急平仓", mention=True)
+            return False
+
         # 3. Take-profit (limit order, reduceOnly to prevent accidental opens)
         tp_result = self.client.place_limit_order(
             self.instId, close_side, sz,
@@ -391,7 +401,11 @@ class BBExecutor:
         return True
 
     def _emergency_close(self, side: str, sz: str) -> bool:
-        """Emergency market close — verify position actually closed."""
+        """Emergency market close — verify position actually closed.
+        
+        Uses exchange position size instead of caller-supplied sz to prevent
+        reduceOnly rejection when sz > actual position (e.g. after partial fill).
+        """
         for attempt in range(3):
             # Check if already closed
             positions = self.client.get_positions(self.instId)
@@ -402,11 +416,22 @@ class BBExecutor:
                 self.save_position(None)
                 return True
 
+            # Use exchange size if available (caller sz may be stale)
+            actual_sz = sz
+            if positions:
+                for p in positions:
+                    pv = abs(float(p.get("pos", 0)))
+                    if pv > 0:
+                        actual_sz = f"{pv:.2f}"
+                        if actual_sz != sz:
+                            logger.warning(f"Size mismatch: caller={sz} exchange={actual_sz}, using exchange")
+                        break
+
             if positions is None:
                 logger.warning(f"Cannot verify position (API error), trying close anyway")
 
             result = self.client.place_market_order(
-                self.instId, side, sz, reduceOnly=True
+                self.instId, side, actual_sz, reduceOnly=True
             )
             if result.get("code") == "0":
                 time.sleep(2)
@@ -529,9 +554,9 @@ class BBExecutor:
             if fill_price > 0:
                 sl = pos.get("sl_price", 0)
                 tp = pos.get("tp_price", 0)
-                if sl and abs(fill_price - sl) / sl < 0.005:
+                if sl and abs(fill_price - sl) / sl < 0.015:
                     return "sl"
-                if tp and abs(fill_price - tp) / tp < 0.005:
+                if tp and abs(fill_price - tp) / tp < 0.015:
                     return "tp"
 
         return "unknown"
