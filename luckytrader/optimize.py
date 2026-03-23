@@ -19,11 +19,16 @@ from luckytrader.config import get_config, get_coin_config, get_workspace_dir, T
 from luckytrader.backtest import simulate_trade
 from luckytrader.regime import compute_de
 
-# BB strategy import (okx_bb lives outside this package)
+# BB canonical backtest import (okx_bb lives in the trading workspace)
 _bb_available = False
 try:
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))  # trading/
-    from okx_bb.strategy import detect_signal as bb_detect_signal
+    # Add trading dir to path for okx_bb imports
+    for _p in [str(Path(__file__).parent.parent.parent),
+               str(Path.home() / ".openclaw" / "workspace" / "trading")]:
+        if _p not in sys.path:
+            sys.path.insert(0, _p)
+    from okx_bb.backtest import backtest_close_confirm_buffer as bb_canonical_backtest
+    from okx_bb.config import OKXConfig, StrategyConfig as BBStrategyConfig, RiskConfig as BBRiskConfig, FeeConfig as BBFeeConfig, ExecutionConfig as BBExecutionConfig
     _bb_available = True
 except ImportError:
     pass
@@ -77,70 +82,51 @@ def run_backtest_hl(candles_30m, candles_4h, sl, tp, hold, cfg, coin_cfg=None):
     return trades
 
 
-def _simulate_trade_with_fee(direction, entry, entry_idx, highs, lows, closes,
-                              stop_pct, tp_pct, max_hold, fee_rt_pct):
-    """simulate_trade with configurable round-trip fee."""
-    if direction == 'LONG':
-        stop = entry * (1 - stop_pct)
-        tp = entry * (1 + tp_pct)
-    else:
-        stop = entry * (1 + stop_pct)
-        tp = entry * (1 - tp_pct)
-
-    fee = fee_rt_pct * 100  # to percentage
-
-    for j in range(1, min(max_hold + 1, len(closes) - entry_idx)):
-        idx = entry_idx + j
-        if direction == 'LONG':
-            if lows[idx] <= stop:
-                return {'dir': direction, 'pnl_pct': -stop_pct * 100 - fee, 'bars': j, 'reason': 'STOP'}
-            if highs[idx] >= tp:
-                return {'dir': direction, 'pnl_pct': tp_pct * 100 - fee, 'bars': j, 'reason': 'TP'}
-        else:
-            if highs[idx] >= stop:
-                return {'dir': direction, 'pnl_pct': -stop_pct * 100 - fee, 'bars': j, 'reason': 'STOP'}
-            if lows[idx] <= tp:
-                return {'dir': direction, 'pnl_pct': tp_pct * 100 - fee, 'bars': j, 'reason': 'TP'}
-
-    exit_idx = min(entry_idx + max_hold, len(closes) - 1)
-    if direction == 'LONG':
-        pnl = (closes[exit_idx] - entry) / entry * 100
-    else:
-        pnl = (entry - closes[exit_idx]) / entry * 100
-    return {'dir': direction, 'pnl_pct': pnl - fee, 'bars': exit_idx - entry_idx, 'reason': 'TIMEOUT'}
-
-
 def run_backtest_bb(candles_30m, sl, tp, hold, bb_period, bb_mult,
                     trend_period, trend_lookback, fee_rt_pct=OKX_FEE_RT_PCT):
-    """Run BB Breakout backtest on a slice. Returns trade list."""
+    """Run BB Breakout backtest using the CANONICAL production backtest.
+    
+    Directly calls okx_bb/backtest.py:backtest_close_confirm_buffer —
+    same entry logic, same entry price, same fees as production.
+    """
     if not _bb_available:
         print("  ⚠️ okx_bb not available, skipping BB backtest")
         return []
 
-    closes = [float(c['c']) for c in candles_30m]
-    opens = [float(c['o']) for c in candles_30m]
-    highs = [float(c['h']) for c in candles_30m]
-    lows = [float(c['l']) for c in candles_30m]
+    # Build OKXConfig with scan parameters
+    cfg = OKXConfig(
+        strategy=BBStrategyConfig(
+            bb_period=bb_period, bb_multiplier=bb_mult,
+            trend_ema_period=trend_period, trend_lookback=trend_lookback,
+        ),
+        risk=BBRiskConfig(
+            stop_loss_pct=sl, take_profit_pct=tp, max_hold_bars=hold,
+        ),
+        fees=BBFeeConfig(
+            taker_fee=0.0005, maker_fee=0.0002,  # OKX VIP0: maker 2bps, taker 5bps
+        ),
+        execution=BBExecutionConfig(entry_buffer_pct=0.0),
+    )
 
-    start = max(bb_period + 1, trend_period + trend_lookback + 1, 50)
+    # Convert candle format: canonical expects float values, not strings
+    candles = [{'o': float(c['o']), 'h': float(c['h']), 'l': float(c['l']),
+                'c': float(c['c']), 'v': float(c.get('v', 0)), 't': c.get('t', 0),
+                'ts': c.get('t', 0)}
+               for c in candles_30m]
+
+    # Run canonical backtest — EXACT same logic as production
+    bb_trades = bb_canonical_backtest(candles, cfg)
+
+    # Convert Trade objects to dict format for compute_stats compatibility
     trades = []
-    in_trade_until = 0
-
-    for i in range(start, len(candles_30m) - 1):
-        if i <= in_trade_until:
-            continue
-
-        signal = bb_detect_signal(closes, bb_period, bb_mult, trend_period, trend_lookback, i)
-        if signal:
-            entry_price = opens[i + 1]
-            t = _simulate_trade_with_fee(signal, entry_price, i + 1,
-                                          highs, lows, closes, sl, tp, hold,
-                                          fee_rt_pct)
-            if t:
-                t['entry_idx'] = i + 1
-                trades.append(t)
-                in_trade_until = i + 1 + t.get('bars', hold)
-
+    for t in bb_trades:
+        trades.append({
+            'dir': t.direction,
+            'pnl_pct': t.pnl * 100,  # canonical uses ratio, we use percentage
+            'bars': t.exit_idx - t.entry_idx,
+            'reason': t.reason.upper(),
+            'entry_idx': t.entry_idx,
+        })
     return trades
 
 
