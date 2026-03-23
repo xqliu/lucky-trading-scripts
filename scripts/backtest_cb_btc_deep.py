@@ -121,12 +121,26 @@ def simulate_trade(candles, start_idx, entry_price, direction):
     return {"exit": "TIMEOUT", "pnl": pnl, "mins": end - start_idx}
 
 
-def run_backtest(candles, threshold, entry_offset=30):
+def run_backtest(candles, threshold, entry_offset=30, slippage_pct=0.05, cooldown_mins=5):
+    """Run CB backtest with realistic assumptions.
+    
+    Args:
+        candles: 1m candle data
+        threshold: CB trigger threshold (%)
+        entry_offset: minutes before spike that position was entered
+        slippage_pct: execution slippage added to CB exit (% adverse)
+        cooldown_mins: after a spike fires, ignore next N minutes (dedup overlapping spikes)
+    """
     results = []
+    last_spike_time = 0  # timestamp of last triggered spike (for cooldown)
     
     for i in range(entry_offset + 1, len(candles) - MAX_HOLD_MINS):
         prev_close = candles[i-1]["c"]
         curr = candles[i]
+
+        # Cooldown: skip if too close to last spike
+        if curr["t"] - last_spike_time < cooldown_mins * 60000:
+            continue
 
         # Real-time trigger: check if HIGH or LOW breached threshold vs prev close
         up_change = (curr["h"] - prev_close) / prev_close * 100
@@ -147,12 +161,11 @@ def run_backtest(candles, threshold, entry_offset=30):
         direction = "SHORT" if is_up else "LONG"
         entry_price = candles[i - entry_offset]["c"]
 
-        # CB exit price = the price at which threshold was breached
-        # (not the extreme of the candle — we exit as soon as threshold hit)
+        # CB exit price = threshold breach point + slippage (adverse direction)
         if is_up:
-            cb_exit = prev_close * (1 + threshold / 100)
+            cb_exit = prev_close * (1 + threshold / 100) * (1 + slippage_pct / 100)
         else:
-            cb_exit = prev_close * (1 - threshold / 100)
+            cb_exit = prev_close * (1 - threshold / 100) * (1 - slippage_pct / 100)
 
         if direction == "SHORT":
             cb_pnl = (entry_price - cb_exit) / entry_price * 100
@@ -175,8 +188,24 @@ def run_backtest(candles, threshold, entry_offset=30):
             "natural_pnl": natural["pnl"],
             "delta": cb_pnl - natural["pnl"],
         })
+        
+        last_spike_time = curr["t"]  # set cooldown
     
     return results
+
+
+def print_summary(results, label=""):
+    """Print summary stats for a set of results."""
+    if not results:
+        print(f"  {label}: 0 spikes")
+        return
+    n = len(results)
+    wins = sum(1 for r in results if r["delta"] > 0)
+    avg_delta = sum(r["delta"] for r in results) / n
+    avg_cb = sum(r["cb_pnl"] for r in results) / n
+    avg_nat = sum(r["natural_pnl"] for r in results) / n
+    marker = "✅" if avg_delta > 0 else "❌"
+    return n, wins/n*100, avg_delta, avg_cb, avg_nat, marker
 
 
 def main():
@@ -186,90 +215,147 @@ def main():
     print(f"\nLoaded {len(candles)} candles ({days:.0f} days)")
     print(f"Range: {datetime.fromtimestamp(candles[0]['t']/1000, tz=timezone.utc):%Y-%m-%d} → "
           f"{datetime.fromtimestamp(candles[-1]['t']/1000, tz=timezone.utc):%Y-%m-%d}")
-    print(f"\nSL={SL_PCT}% TP={TP_PCT}% 超时={MAX_HOLD_MINS//60}h entry_offset=30min")
+    print(f"\nSL={SL_PCT}% TP={TP_PCT}% 超时={MAX_HOLD_MINS//60}h")
     sys.stdout.flush()
     
-    thresholds = [round(t/10, 1) for t in range(3, 11)]  # 0.3, 0.4, ..., 1.0
+    # ═══════════════════════════════════════════════════════════════
+    # PART 1: Baseline with realistic defaults
+    # slippage=0.05%, cooldown=5min, entry_offset=30
+    # ═══════════════════════════════════════════════════════════════
+    print(f"\n{'='*80}")
+    print("PART 1: Realistic baseline (slippage=0.05%, cooldown=5min, offset=30)")
+    print(f"{'='*80}")
     
-    print(f"\n{'Thr':>5} | {'Spikes':>6} | {'CB Win%':>7} | {'Avg Δ':>8} | {'CB PnL':>8} | {'Nat PnL':>8} | {'SL':>4} | {'TP':>4} | {'TO':>4} | {'Miss TP':>7} | {'Save SL':>7}")
-    print("-" * 105)
+    thresholds = [round(t/10, 1) for t in range(3, 11)]
     
-    all_results = {}
+    print(f"\n{'Thr':>5} | {'Spikes':>6} | {'CB Win%':>7} | {'Avg Δ':>8} | {'CB PnL':>8} | {'Nat PnL':>8}")
+    print("-" * 60)
     
+    baseline_results = {}
     for threshold in thresholds:
-        results = run_backtest(candles, threshold)
-        all_results[threshold] = results
-        
+        results = run_backtest(candles, threshold, entry_offset=30, slippage_pct=0.05, cooldown_mins=5)
+        baseline_results[threshold] = results
         if not results:
             print(f"{threshold:5.1f} | {'0':>6} | {'N/A':>7}")
             continue
-        
-        n = len(results)
-        wins = sum(1 for r in results if r["delta"] > 0)
-        avg_delta = sum(r["delta"] for r in results) / n
-        avg_cb = sum(r["cb_pnl"] for r in results) / n
-        avg_nat = sum(r["natural_pnl"] for r in results) / n
-        sl_count = sum(1 for r in results if r["natural_exit"] == "SL")
-        tp_count = sum(1 for r in results if r["natural_exit"] == "TP")
-        to_count = sum(1 for r in results if r["natural_exit"] == "TIMEOUT")
-        miss_tp = sum(1 for r in results if r["natural_exit"] == "TP" and r["delta"] < 0)
-        save_sl = sum(1 for r in results if r["natural_exit"] == "SL" and r["delta"] > 0)
-        
-        marker = "✅" if avg_delta > 0 else "❌"
-        print(f"{threshold:5.1f} | {n:>6} | {wins/n*100:>6.1f}% | {avg_delta:>+7.3f}% | {avg_cb:>+7.3f}% | {avg_nat:>+7.3f}% | {sl_count:>4} | {tp_count:>4} | {to_count:>4} | {miss_tp:>7} | {save_sl:>7} {marker}")
-        sys.stdout.flush()
+        n, wr, avg_d, avg_cb, avg_nat, m = print_summary(results)
+        print(f"{threshold:5.1f} | {n:>6} | {wr:>6.1f}% | {avg_d:>+7.3f}% | {avg_cb:>+7.3f}% | {avg_nat:>+7.3f}% {m}")
+    sys.stdout.flush()
     
-    # Monthly breakdown for the most interesting threshold (0.5%)
-    print(f"\n\n{'=' * 70}")
-    print("BTC 0.5% 阈值 — 月度拆分")
-    print(f"{'=' * 70}")
+    # ═══════════════════════════════════════════════════════════════
+    # PART 2: entry_offset sensitivity (threshold=0.5%)
+    # How much does assumed entry time change results?
+    # ═══════════════════════════════════════════════════════════════
+    print(f"\n{'='*80}")
+    print("PART 2: Entry offset sensitivity (threshold=0.5%, slippage=0.05%, cooldown=5min)")
+    print(f"{'='*80}")
     
-    target_threshold = 0.5
-    results = all_results.get(target_threshold, [])
+    offsets = [5, 10, 15, 20, 30, 45, 60, 90, 120]
+    print(f"\n{'Offset':>8} | {'Spikes':>6} | {'CB Win%':>7} | {'Avg Δ':>8} | {'CB PnL':>8} | {'Nat PnL':>8}")
+    print("-" * 65)
     
+    offset_deltas = []
+    for offset in offsets:
+        results = run_backtest(candles, 0.5, entry_offset=offset, slippage_pct=0.05, cooldown_mins=5)
+        if not results:
+            continue
+        n, wr, avg_d, avg_cb, avg_nat, m = print_summary(results)
+        offset_deltas.append(avg_d)
+        print(f"{offset:>6}m | {n:>6} | {wr:>6.1f}% | {avg_d:>+7.3f}% | {avg_cb:>+7.3f}% | {avg_nat:>+7.3f}% {m}")
+    sys.stdout.flush()
+    
+    if offset_deltas:
+        print(f"\n  Range of Avg Δ across offsets: {min(offset_deltas):+.3f}% to {max(offset_deltas):+.3f}%")
+        print(f"  Mean: {sum(offset_deltas)/len(offset_deltas):+.3f}%")
+    
+    # ═══════════════════════════════════════════════════════════════
+    # PART 3: Slippage sensitivity (threshold=0.5%, offset=30)
+    # ═══════════════════════════════════════════════════════════════
+    print(f"\n{'='*80}")
+    print("PART 3: Slippage sensitivity (threshold=0.5%, offset=30, cooldown=5min)")
+    print(f"{'='*80}")
+    
+    slippages = [0.0, 0.02, 0.05, 0.08, 0.10, 0.15, 0.20]
+    print(f"\n{'Slip':>6} | {'Spikes':>6} | {'CB Win%':>7} | {'Avg Δ':>8} | {'CB PnL':>8} | {'Nat PnL':>8}")
+    print("-" * 60)
+    
+    for slip in slippages:
+        results = run_backtest(candles, 0.5, entry_offset=30, slippage_pct=slip, cooldown_mins=5)
+        if not results:
+            continue
+        n, wr, avg_d, avg_cb, avg_nat, m = print_summary(results)
+        print(f"{slip:>5.2f}% | {n:>6} | {wr:>6.1f}% | {avg_d:>+7.3f}% | {avg_cb:>+7.3f}% | {avg_nat:>+7.3f}% {m}")
+    sys.stdout.flush()
+    
+    # ═══════════════════════════════════════════════════════════════
+    # PART 4: Cooldown sensitivity (threshold=0.5%, offset=30)
+    # ═══════════════════════════════════════════════════════════════
+    print(f"\n{'='*80}")
+    print("PART 4: Cooldown sensitivity (threshold=0.5%, offset=30, slippage=0.05%)")
+    print(f"{'='*80}")
+    
+    cooldowns = [0, 1, 2, 3, 5, 10, 15, 30, 60]
+    print(f"\n{'Cool':>6} | {'Spikes':>6} | {'CB Win%':>7} | {'Avg Δ':>8}")
+    print("-" * 40)
+    
+    for cd in cooldowns:
+        results = run_backtest(candles, 0.5, entry_offset=30, slippage_pct=0.05, cooldown_mins=cd)
+        if not results:
+            continue
+        n, wr, avg_d, _, _, m = print_summary(results)
+        print(f"{cd:>4}m | {n:>6} | {wr:>6.1f}% | {avg_d:>+7.3f}% {m}")
+    sys.stdout.flush()
+    
+    # ═══════════════════════════════════════════════════════════════
+    # PART 5: Monthly breakdown (best config from above)
+    # ═══════════════════════════════════════════════════════════════
+    print(f"\n{'='*80}")
+    print("PART 5: Monthly breakdown — 0.5% threshold, realistic params")
+    print(f"{'='*80}")
+    
+    results = baseline_results.get(0.5, [])
     months = defaultdict(list)
     for r in results:
         months[r["month"]].append(r)
     
-    print(f"\n{'Month':>7} | {'Spikes':>6} | {'CB Win%':>7} | {'Avg Δ':>8} | {'SL':>3} | {'TP':>3} | {'Miss TP':>7} | {'Save SL':>7}")
-    print("-" * 75)
+    print(f"\n{'Month':>7} | {'Spikes':>6} | {'CB Win%':>7} | {'Avg Δ':>8}")
+    print("-" * 40)
     
+    pos_months = 0
     for month in sorted(months.keys()):
         mr = months[month]
         n = len(mr)
         wins = sum(1 for r in mr if r["delta"] > 0)
         avg_delta = sum(r["delta"] for r in mr) / n
-        sl_count = sum(1 for r in mr if r["natural_exit"] == "SL")
-        tp_count = sum(1 for r in mr if r["natural_exit"] == "TP")
-        miss_tp = sum(1 for r in mr if r["natural_exit"] == "TP" and r["delta"] < 0)
-        save_sl = sum(1 for r in mr if r["natural_exit"] == "SL" and r["delta"] > 0)
         marker = "✅" if avg_delta > 0 else "❌"
-        print(f"{month:>7} | {n:>6} | {wins/n*100:>6.1f}% | {avg_delta:>+7.3f}% | {sl_count:>3} | {tp_count:>3} | {miss_tp:>7} | {save_sl:>7} {marker}")
+        if avg_delta > 0:
+            pos_months += 1
+        print(f"{month:>7} | {n:>6} | {wins/n*100:>6.1f}% | {avg_delta:>+7.3f}% {marker}")
     
-    # Also do 0.4% monthly
-    print(f"\n\n{'=' * 70}")
-    print("BTC 0.4% 阈值 — 月度拆分")
-    print(f"{'=' * 70}")
+    total_months = len(months)
+    print(f"\nPositive months: {pos_months}/{total_months}")
     
-    results_04 = all_results.get(0.4, [])
-    months_04 = defaultdict(list)
-    for r in results_04:
-        months_04[r["month"]].append(r)
+    # ═══════════════════════════════════════════════════════════════
+    # VERDICT
+    # ═══════════════════════════════════════════════════════════════
+    print(f"\n{'='*80}")
+    print("VERDICT")
+    print(f"{'='*80}")
     
-    print(f"\n{'Month':>7} | {'Spikes':>6} | {'CB Win%':>7} | {'Avg Δ':>8} | {'SL':>3} | {'TP':>3} | {'Miss TP':>7} | {'Save SL':>7}")
-    print("-" * 75)
-    
-    for month in sorted(months_04.keys()):
-        mr = months_04[month]
-        n = len(mr)
-        wins = sum(1 for r in mr if r["delta"] > 0)
-        avg_delta = sum(r["delta"] for r in mr) / n
-        sl_count = sum(1 for r in mr if r["natural_exit"] == "SL")
-        tp_count = sum(1 for r in mr if r["natural_exit"] == "TP")
-        miss_tp = sum(1 for r in mr if r["natural_exit"] == "TP" and r["delta"] < 0)
-        save_sl = sum(1 for r in mr if r["natural_exit"] == "SL" and r["delta"] > 0)
-        marker = "✅" if avg_delta > 0 else "❌"
-        print(f"{month:>7} | {n:>6} | {wins/n*100:>6.1f}% | {avg_delta:>+7.3f}% | {sl_count:>3} | {tp_count:>3} | {miss_tp:>7} | {save_sl:>7} {marker}")
+    best = baseline_results.get(0.5, [])
+    if best:
+        n, wr, avg_d, avg_cb, avg_nat, m = print_summary(best)
+        annual_triggers = n / (days / 365)
+        annual_dollar = annual_triggers * avg_d / 100 * 210  # assuming $210 account
+        print(f"\n  Best threshold: 0.5%")
+        print(f"  Avg delta per spike: {avg_d:+.3f}%")
+        print(f"  Win rate: {wr:.1f}%")
+        print(f"  Spikes/year (est): {annual_triggers:.0f}")
+        print(f"  Annual $ impact (on $210): ${annual_dollar:+.1f}")
+        print(f"  Annual % impact: {annual_triggers * avg_d:+.1f}%")
+        print(f"  Positive months: {pos_months}/{total_months}")
+        if offset_deltas:
+            print(f"  Entry offset sensitivity: {min(offset_deltas):+.3f}% to {max(offset_deltas):+.3f}%")
 
 
 if __name__ == "__main__":
