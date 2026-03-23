@@ -74,7 +74,7 @@ MAX_RECONNECT_DELAY = 120
 PENDING_STATE_FILE = STATE_DIR / "pending_orders.json"
 
 # Prefix for all Discord messages (remove when system proven stable)
-MSG_PREFIX = ""
+MSG_PREFIX = "[ETH BB] "
 
 
 class CandleAccumulator:
@@ -991,7 +991,11 @@ class WSMonitor:
                         if exchange_dir != local_dir or abs(exchange_size - local_sz) > 0.001:
                             logger.error(f"PERIODIC: State mismatch! local={local_dir} {local_sz} vs exchange={exchange_dir} {exchange_size}")
                             await send_discord(
-                                f"{MSG_PREFIX}🚨 状态不一致！本地={local_dir} {local_sz} vs 交易所={exchange_dir} {exchange_size}，自动同步中",
+                                f"{MSG_PREFIX}🚨 ETH BB 状态不一致！\n"
+                                f"策略: OKX ETH BB | 币种: {self.cfg.coin}\n"
+                                f"本地: {local_dir} {local_sz} 张 | 交易所: {exchange_dir} {exchange_size} 张\n"
+                                f"入场: ${local_pos.get('entry_price', 0):.2f} | SL: ${local_pos.get('sl_price', 0):.2f}\n"
+                                f"自动同步中...",
                                 mention=True)
                             self.executor.reconcile_position_from_exchange(source="periodic_sl_mismatch")
                             local_pos = self.executor.load_position()
@@ -1017,14 +1021,24 @@ class WSMonitor:
                                 logger.error(f"PERIODIC: Price {current_price} already below SL {sl_p:.2f} — market close instead")
                                 await self._rest_exchange("place_market_order",
                                     self.cfg.instId, close_side, sz, True)
-                                await send_discord(f"{MSG_PREFIX}🚨 价格已穿过 SL → 市价平仓", mention=True)
+                                await send_discord(
+                                    f"{MSG_PREFIX}🚨 ETH BB 价格穿过 SL → 市价平仓\n"
+                                    f"策略: OKX ETH BB | 币种: {self.cfg.coin}\n"
+                                    f"方向: {d} {sz} 张 | 入场: ${ap:.2f}\n"
+                                    f"SL: ${sl_p:.2f} | 当前: ${current_price:.2f}",
+                                    mention=True)
                                 self.executor.save_position(None)
                                 continue
                             elif d == "SHORT" and current_price >= sl_p:
                                 logger.error(f"PERIODIC: Price {current_price} already above SL {sl_p:.2f} — market close instead")
                                 await self._rest_exchange("place_market_order",
                                     self.cfg.instId, close_side, sz, True)
-                                await send_discord(f"{MSG_PREFIX}🚨 价格已穿过 SL → 市价平仓", mention=True)
+                                await send_discord(
+                                    f"{MSG_PREFIX}🚨 ETH BB 价格穿过 SL → 市价平仓\n"
+                                    f"策略: OKX ETH BB | 币种: {self.cfg.coin}\n"
+                                    f"方向: {d} {sz} 张 | 入场: ${ap:.2f}\n"
+                                    f"SL: ${sl_p:.2f} | 当前: ${current_price:.2f}",
+                                    mention=True)
                                 self.executor.save_position(None)
                                 continue
 
