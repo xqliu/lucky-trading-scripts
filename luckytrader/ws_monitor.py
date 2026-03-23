@@ -954,7 +954,9 @@ class WSMonitor:
         self._loop = None
 
         # Circuit Breaker state
-        self._cb_prev_close = None  # 上一根 1m K 线 close
+        self._cb_prev_close = None  # 上一根已收盘 1m K 线 close
+        self._cb_current_candle_time = 0  # 当前 1m K 线时间戳（用于检测收盘）
+        self._cb_last_close = None  # 当前 K 线的最新 close（WS 实时更新）
 
         # 设置信号处理（优雅停机）
         sig.signal(sig.SIGTERM, self._signal_handler)
@@ -1110,16 +1112,30 @@ class WSMonitor:
         """
         try:
             curr_close = float(kline_data["close"])
+            candle_time = int(kline_data["time"])
 
-            # 需要前一根 close 来计算涨跌幅
+            # WS pushes real-time updates for the CURRENT candle (every ~1s).
+            # We only want to compare CLOSED candles (when candle_time changes).
+            if candle_time == self._cb_current_candle_time:
+                # Same candle, just update latest close
+                self._cb_last_close = curr_close
+                return
+
+            # New candle started → previous candle just closed
+            # The close of the previous candle = self._cb_last_close (last update before time change)
+            closed_close = self._cb_last_close if self._cb_last_close is not None else curr_close
+            self._cb_current_candle_time = candle_time
+            self._cb_last_close = curr_close
+
+            # Need previous closed candle to compare
             if self._cb_prev_close is None:
-                self._cb_prev_close = curr_close
+                self._cb_prev_close = closed_close
                 return
 
             prev = self._cb_prev_close
-            self._cb_prev_close = curr_close
+            self._cb_prev_close = closed_close
 
-            change_pct = (curr_close - prev) / prev * 100
+            change_pct = (closed_close - prev) / prev * 100
 
             if abs(change_pct) < self.CB_THRESHOLD:
                 return
@@ -1156,14 +1172,13 @@ class WSMonitor:
             )
 
             if close_result and close_result.get("action") == "CLOSED":
-                exit_price = close_result.get("exit_price", curr_close)
+                exit_price = close_result.get("exit_price", closed_close)
                 if pos_direction == "SHORT":
                     pnl_pct = (entry_price - exit_price) / entry_price * 100
+                    pnl_usd = abs(size) * (entry_price - exit_price)
                 else:
                     pnl_pct = (exit_price - entry_price) / entry_price * 100
-                pnl_usd = size * abs(pnl_pct) / 100 * entry_price
-                if pnl_pct < 0:
-                    pnl_usd = -pnl_usd
+                    pnl_usd = abs(size) * (exit_price - entry_price)
 
                 msg = (f"⚡ [HL] Circuit Breaker 触发\n"
                        f"**{self.CB_COIN} {pos_direction}** 市价平仓\n"
