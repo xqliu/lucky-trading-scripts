@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-月度策略优化 v2 — 多币种 + Out-of-Sample + Regime 分层 + 常识关卡
+月度策略优化 v2 — 多策略 + Out-of-Sample + Regime 分层 + 常识关卡
 
-修复 v1 的 5 个问题：
-1. 多币种：BTC + ETH（各用自己的 coin_config）
-2. Out-of-sample：前 70% 训练，后 30% 验证，防止过拟合
-3. Regime 分层：分别报告横盘和趋势市的表现
-4. 常识关卡：结果自动检查合理性
-5. 自动化：可被 cron 调用
+支持的策略：
+- BTC: HL Momentum (luckytrader/strategy.py) → HL exchange
+- ETH: BB Breakout (okx_bb/strategy.py) → OKX exchange
+- SOL: BB Breakout (okx_sol_bb/) → OKX exchange
 
 每月1号自动运行，输出建议报告，不自动改配置。
 """
@@ -16,17 +14,37 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from luckytrader.signal import get_candles
-from luckytrader.strategy import detect_signal
+from luckytrader.strategy import detect_signal as hl_detect_signal
 from luckytrader.config import get_config, get_coin_config, get_workspace_dir, TRADING_COINS, TradingConfig
 from luckytrader.backtest import simulate_trade
 from luckytrader.regime import compute_de
 
+# BB strategy import (okx_bb lives outside this package)
+_bb_available = False
+try:
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))  # trading/
+    from okx_bb.strategy import detect_signal as bb_detect_signal
+    _bb_available = True
+except ImportError:
+    pass
+
+# Strategy routing: which coin uses which strategy
+STRATEGY_MAP = {
+    "BTC": "hl_momentum",
+    "ETH": "bb_breakout",
+    "SOL": "bb_breakout",
+}
+
+# OKX BB fee: 10 bps round-trip (5 bps/side taker)
+OKX_FEE_RT_PCT = 0.0010
+# HL fee: 8.64 bps round-trip
+HL_FEE_RT_PCT = 0.000864
 
 _cfg = get_config()
 
 
-def run_backtest_on_slice(candles_30m, candles_4h, sl, tp, hold, cfg, coin_cfg=None):
-    """Run backtest on a slice of data. Returns trade list + stats."""
+def run_backtest_hl(candles_30m, candles_4h, sl, tp, hold, cfg, coin_cfg=None):
+    """Run HL Momentum backtest on a slice. Returns trade list."""
     closes = [float(c['c']) for c in candles_30m]
     opens = [float(c['o']) for c in candles_30m]
     highs = [float(c['h']) for c in candles_30m]
@@ -47,17 +65,100 @@ def run_backtest_on_slice(candles_30m, candles_4h, sl, tp, hold, cfg, coin_cfg=N
         if i <= in_trade_until:
             continue
 
-        signal = detect_signal(candles_30m, candles_4h or [], i, cfg, coin_cfg)
+        signal = hl_detect_signal(candles_30m, candles_4h or [], i, cfg, coin_cfg)
         if signal:
             entry_price = opens[i + 1]
             t = simulate_trade(signal, entry_price, i + 1, highs, lows, closes, sl, tp, hold)
             if t:
-                # Tag with regime at entry
                 t['entry_idx'] = i + 1
                 trades.append(t)
                 in_trade_until = i + 1 + t.get('bars', hold)
 
     return trades
+
+
+def _simulate_trade_with_fee(direction, entry, entry_idx, highs, lows, closes,
+                              stop_pct, tp_pct, max_hold, fee_rt_pct):
+    """simulate_trade with configurable round-trip fee."""
+    if direction == 'LONG':
+        stop = entry * (1 - stop_pct)
+        tp = entry * (1 + tp_pct)
+    else:
+        stop = entry * (1 + stop_pct)
+        tp = entry * (1 - tp_pct)
+
+    fee = fee_rt_pct * 100  # to percentage
+
+    for j in range(1, min(max_hold + 1, len(closes) - entry_idx)):
+        idx = entry_idx + j
+        if direction == 'LONG':
+            if lows[idx] <= stop:
+                return {'dir': direction, 'pnl_pct': -stop_pct * 100 - fee, 'bars': j, 'reason': 'STOP'}
+            if highs[idx] >= tp:
+                return {'dir': direction, 'pnl_pct': tp_pct * 100 - fee, 'bars': j, 'reason': 'TP'}
+        else:
+            if highs[idx] >= stop:
+                return {'dir': direction, 'pnl_pct': -stop_pct * 100 - fee, 'bars': j, 'reason': 'STOP'}
+            if lows[idx] <= tp:
+                return {'dir': direction, 'pnl_pct': tp_pct * 100 - fee, 'bars': j, 'reason': 'TP'}
+
+    exit_idx = min(entry_idx + max_hold, len(closes) - 1)
+    if direction == 'LONG':
+        pnl = (closes[exit_idx] - entry) / entry * 100
+    else:
+        pnl = (entry - closes[exit_idx]) / entry * 100
+    return {'dir': direction, 'pnl_pct': pnl - fee, 'bars': exit_idx - entry_idx, 'reason': 'TIMEOUT'}
+
+
+def run_backtest_bb(candles_30m, sl, tp, hold, bb_period, bb_mult,
+                    trend_period, trend_lookback, fee_rt_pct=OKX_FEE_RT_PCT):
+    """Run BB Breakout backtest on a slice. Returns trade list."""
+    if not _bb_available:
+        print("  ⚠️ okx_bb not available, skipping BB backtest")
+        return []
+
+    closes = [float(c['c']) for c in candles_30m]
+    opens = [float(c['o']) for c in candles_30m]
+    highs = [float(c['h']) for c in candles_30m]
+    lows = [float(c['l']) for c in candles_30m]
+
+    start = max(bb_period + 1, trend_period + trend_lookback + 1, 50)
+    trades = []
+    in_trade_until = 0
+
+    for i in range(start, len(candles_30m) - 1):
+        if i <= in_trade_until:
+            continue
+
+        signal = bb_detect_signal(closes, bb_period, bb_mult, trend_period, trend_lookback, i)
+        if signal:
+            entry_price = opens[i + 1]
+            t = _simulate_trade_with_fee(signal, entry_price, i + 1,
+                                          highs, lows, closes, sl, tp, hold,
+                                          fee_rt_pct)
+            if t:
+                t['entry_idx'] = i + 1
+                trades.append(t)
+                in_trade_until = i + 1 + t.get('bars', hold)
+
+    return trades
+
+
+# Backward compat alias
+run_backtest_on_slice = run_backtest_hl
+
+
+def _run_backtest(strategy_type, candles_30m, candles_4h, sl, tp, hold,
+                  cfg=None, coin_cfg=None,
+                  bb_period=None, bb_mult=None, trend_period=None, trend_lookback=None):
+    """Route to correct backtest based on strategy type."""
+    if strategy_type == "bb_breakout":
+        return run_backtest_bb(candles_30m, sl, tp, hold,
+                               bb_period, bb_mult, trend_period, trend_lookback,
+                               fee_rt_pct=OKX_FEE_RT_PCT)
+    else:
+        return run_backtest_hl(candles_30m, candles_4h, sl, tp, hold,
+                               cfg or _cfg, coin_cfg)
 
 
 def compute_stats(trades):
@@ -150,35 +251,67 @@ def sanity_check(best_params, best_stats, current_stats, coin):
     return warnings
 
 
+def _load_bb_config(coin):
+    """Load BB strategy config for ETH/SOL."""
+    import tomllib
+    # okx_bb and okx_sol_bb live in the trading workspace dir
+    workspace = get_workspace_dir()  # ~/.openclaw/workspace
+    pkg_name = "okx_bb" if coin == "ETH" else "okx_sol_bb"
+    candidates = [
+        workspace / "trading" / pkg_name / "config",
+        workspace / pkg_name / "config",
+        Path(__file__).parent.parent.parent / pkg_name / "config",
+    ]
+    for cfg_dir in candidates:
+        cfg_file = cfg_dir / "config.toml"
+        if cfg_file.exists():
+            with open(cfg_file, "rb") as f:
+                return tomllib.load(f)
+    return None
+
+
 def optimize_coin(coin, days=180):
     """Optimize one coin with train/test split."""
+    strategy_type = STRATEGY_MAP.get(coin, "hl_momentum")
+
     print(f"\n{'='*70}")
-    print(f"  {coin} 优化")
+    print(f"  {coin} 优化 [{strategy_type}]")
     print(f"{'='*70}")
 
-    # Get coin config
-    try:
-        coin_cfg = get_coin_config(coin)
-    except:
+    # Load current params based on strategy type
+    if strategy_type == "bb_breakout":
+        bb_cfg = _load_bb_config(coin)
+        if not bb_cfg:
+            print(f"  ⚠️ 无法加载 {coin} BB 配置")
+            return None
+        current_sl = bb_cfg["risk"]["stop_loss_pct"]
+        current_tp = bb_cfg["risk"]["take_profit_pct"]
+        current_hold = bb_cfg["risk"].get("max_hold_bars", 120)
+        bb_period = bb_cfg["strategy"]["bb_period"]
+        bb_mult = bb_cfg["strategy"]["bb_multiplier"]
+        trend_period = bb_cfg["strategy"].get("trend_ema_period", 96)
+        trend_lookback = bb_cfg["strategy"].get("trend_lookback", 8)
         coin_cfg = None
-
-    # Current params
-    if coin_cfg:
-        current_sl = coin_cfg.stop_loss_pct
-        current_tp = coin_cfg.take_profit_pct
-        current_hold = int(getattr(coin_cfg, 'max_hold_hours', _cfg.risk.max_hold_hours) * 2)
     else:
-        current_sl = _cfg.risk.stop_loss_pct
-        current_tp = _cfg.risk.take_profit_pct
-        current_hold = int(_cfg.risk.max_hold_hours * 2)
+        try:
+            coin_cfg = get_coin_config(coin)
+        except Exception:
+            coin_cfg = None
+        if coin_cfg:
+            current_sl = coin_cfg.stop_loss_pct
+            current_tp = coin_cfg.take_profit_pct
+            current_hold = int(getattr(coin_cfg, 'max_hold_hours', _cfg.risk.max_hold_hours) * 2)
+        else:
+            current_sl = _cfg.risk.stop_loss_pct
+            current_tp = _cfg.risk.take_profit_pct
+            current_hold = int(_cfg.risk.max_hold_hours * 2)
+        bb_period = bb_mult = trend_period = trend_lookback = None
 
-    # Map coin to OKX instrument
-    inst_map = {"BTC": "BTC", "ETH": "ETH", "SOL": "SOL"}
-    coin_sym = inst_map.get(coin, coin)
+    coin_sym = coin
 
     # Download data
     candles_30m = get_candles(coin_sym, '30m', 24 * days)
-    candles_4h = get_candles(coin_sym, '4h', 24 * days // 8)
+    candles_4h = get_candles(coin_sym, '4h', 24 * days // 8) if strategy_type == "hl_momentum" else []
 
     if not candles_30m or len(candles_30m) < 200:
         print(f"  ⚠️ 数据不足: {len(candles_30m) if candles_30m else 0} 根 30m")
@@ -204,8 +337,14 @@ def optimize_coin(coin, days=180):
     test_days = len(test_30m) / 48
     print(f"  训练集: {train_days:.0f}天 | 测试集: {test_days:.0f}天")
 
+    # Shared kwargs for BB routing
+    _bb_kw = dict(bb_period=bb_period, bb_mult=bb_mult,
+                  trend_period=trend_period, trend_lookback=trend_lookback)
+
     # Current params on full data
-    current_trades = run_backtest_on_slice(candles_30m, candles_4h, current_sl, current_tp, current_hold, _cfg, coin_cfg)
+    current_trades = _run_backtest(strategy_type, candles_30m, candles_4h,
+                                   current_sl, current_tp, current_hold,
+                                   _cfg, coin_cfg, **_bb_kw)
     current_stats = compute_stats(current_trades)
     print(f"\n  当前参数 (SL{current_sl*100:.1f}% TP{current_tp*100:.1f}% {current_hold*0.5:.0f}h):")
     print(f"    {current_stats['count']}笔 | 胜率{current_stats['winrate']}% | 总{current_stats['total']:+.1f}% | 每笔{current_stats['avg']:+.3f}% | 最大回撤{current_stats['max_dd']:.1f}%")
@@ -223,7 +362,7 @@ def optimize_coin(coin, days=180):
     for sl in sls:
         for tp in tps:
             for hold in holds:
-                trades = run_backtest_on_slice(train_30m, train_4h, sl, tp, hold, _cfg, coin_cfg)
+                trades = _run_backtest(strategy_type, train_30m, train_4h, sl, tp, hold, _cfg, coin_cfg, **_bb_kw)
                 stats = compute_stats(trades)
                 if stats["count"] >= 10:
                     train_results.append({"sl": sl, "tp": tp, "hold": hold, **stats})
@@ -241,7 +380,7 @@ def optimize_coin(coin, days=180):
 
     validated = []
     for i, r in enumerate(train_results[:5]):
-        test_trades = run_backtest_on_slice(test_30m, test_4h, r["sl"], r["tp"], r["hold"], _cfg, coin_cfg)
+        test_trades = _run_backtest(strategy_type, test_30m, test_4h, r["sl"], r["tp"], r["hold"], _cfg, coin_cfg, **_bb_kw)
         test_stats = compute_stats(test_trades)
 
         # Tag regime on test trades
@@ -286,7 +425,7 @@ def optimize_coin(coin, days=180):
     if best:
         best_params = {"sl": best["sl"], "tp": best["tp"], "hold": best["hold"]}
         current_test_for_sanity = compute_stats(
-            run_backtest_on_slice(test_30m, test_4h, current_sl, current_tp, current_hold, _cfg, coin_cfg)
+            _run_backtest(strategy_type, test_30m, test_4h, current_sl, current_tp, current_hold, _cfg, coin_cfg, **_bb_kw)
         )
         warnings = sanity_check(best_params, best["test"], current_test_for_sanity, coin)
         if warnings:
@@ -312,7 +451,7 @@ def optimize_coin(coin, days=180):
     test_improvement = 0
     if current_stats["avg"] != 0:
         # Run current params on test set for fair comparison
-        current_test_trades = run_backtest_on_slice(test_30m, test_4h, current_sl, current_tp, current_hold, _cfg, coin_cfg)
+        current_test_trades = _run_backtest(strategy_type, test_30m, test_4h, current_sl, current_tp, current_hold, _cfg, coin_cfg, **_bb_kw)
         current_test_stats = compute_stats(current_test_trades)
         if current_test_stats["avg"] != 0:
             test_improvement = (bp["test"]["avg"] - current_test_stats["avg"]) / abs(current_test_stats["avg"]) * 100
@@ -355,11 +494,12 @@ def optimize():
     print("="*70)
     print("月度策略优化 v2")
     print(f"时间: {datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}")
-    print(f"币种: {', '.join(TRADING_COINS)}")
+    all_coins = list(STRATEGY_MAP.keys())  # BTC, ETH, SOL
+    print(f"币种: {', '.join(all_coins)}")
     print("="*70)
 
     results = {}
-    for coin in TRADING_COINS:
+    for coin in all_coins:
         try:
             r = optimize_coin(coin, days=180)
             if r:
