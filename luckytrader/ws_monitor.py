@@ -1168,13 +1168,20 @@ class WSMonitor:
             entry_price = position.get("entry_price", 0)
             size = position.get("size", 0)
 
-            # Execute market close — close_position expects position dict
+            # Stop trailing monitor BEFORE closing to prevent race condition
+            self.trade_executor.stop_trailing_monitor()
+
+            # Execute market close — close_position returns True (success) or None (no position)
             close_result = await asyncio.to_thread(
                 execute.close_position, position, coin=self.CB_COIN
             )
 
-            if close_result and close_result.get("action") == "CLOSED":
-                exit_price = close_result.get("exit_price", curr_close)
+            if close_result:
+                # Get actual exit price from market
+                from luckytrader.trade import get_market_price
+                actual_price = await asyncio.to_thread(get_market_price, self.CB_COIN)
+                exit_price = actual_price or curr_close
+
                 if pos_direction == "SHORT":
                     pnl_pct = (entry_price - exit_price) / entry_price * 100
                     pnl_usd = abs(size) * (entry_price - exit_price)
@@ -1185,8 +1192,8 @@ class WSMonitor:
                 msg = (f"⚡ [HL] Circuit Breaker 触发\n"
                        f"**{self.CB_COIN} {pos_direction}** 市价平仓\n"
                        f"1m 异动: {change_pct:+.2f}% | 阈值: {self.CB_THRESHOLD}%\n"
-                       f"入场: ${entry_price:,.1f} → 出场: ${exit_price:,.1f}\n"
-                       f"PnL: {pnl_pct:+.2f}% (${pnl_usd:+.2f})\n"
+                       f"入场: ${entry_price:,.1f} → 出场: ~${exit_price:,.1f}\n"
+                       f"PnL: ~{pnl_pct:+.2f}% (~${pnl_usd:+.2f})\n"
                        f"<@1469390967256703013> <@1469405440289821357>")
                 logger.info(f"CB close done: {msg}")
                 await self.notification_manager.async_send_notification(msg)
