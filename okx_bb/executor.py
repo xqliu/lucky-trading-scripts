@@ -566,8 +566,8 @@ class BBExecutor:
 
         return "unknown"
 
-    # Contract size: ETH-USDT-SWAP 1 contract = 0.01 ETH
-    CONTRACT_SIZE = 0.01
+    # Contract size: ETH-USDT-SWAP 1 contract = 0.1 ETH (OKX ctVal=0.1)
+    CONTRACT_SIZE = 0.1
 
     def position_status(self, pos: Optional[dict] = None) -> str:
         """Return formatted position status string with accurate PnL.
