@@ -317,7 +317,20 @@ def main():
         if state:
             print("🧹 Cleaning stale trailing state")
             from luckytrader.execute import notify_discord
-            notify_discord(f"⚠️ **State 不一致** — 链上无持仓但 trailing_state 有残留: {list(state.keys())}，已自动清理")
+            stale_coins = list(state.keys())
+            stale_details = []
+            for c, s in state.items():
+                entry = s.get("entry_price", "?")
+                direction = s.get("direction", "?")
+                highest = s.get("highest_price", "?")
+                sl = s.get("stop_loss", "?")
+                stale_details.append(f"  • {c} {direction} 入场=${entry} 最高=${highest} SL=${sl}")
+            detail_str = "\n".join(stale_details)
+            notify_discord(
+                f"⚠️ **[HL] State 不一致** — 链上无持仓但 trailing_state 有残留\n"
+                f"策略: HL Momentum | 残留币种: {stale_coins}\n"
+                f"{detail_str}\n"
+                f"已自动清理")
             save_state({})
         return
     

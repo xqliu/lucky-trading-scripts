@@ -382,7 +382,12 @@ def _execute_inner(dry_run, mode, _CST, coin="BTC"):
         print(f"  估算PnL: {pnl_pct:+.2f}%, 原因: {reason}")
         
         emoji = "🎯" if reason == "TP" else "🛑"
-        notify_discord(f"{emoji} **平仓** {sp['direction']} {coin} — {reason}触发\n💰 入场: ${sp['entry_price']:,.2f} → 平仓: ~${current_price:,.2f}\n📊 盈亏: {pnl_pct:+.2f}%")
+        size = abs(sp.get('size', 0))
+        if sp['direction'] == 'LONG':
+            pnl_usd = (current_price - sp['entry_price']) * size
+        else:
+            pnl_usd = (sp['entry_price'] - current_price) * size
+        notify_discord(f"{emoji} **[HL] 平仓** {sp['direction']} {coin} — {reason}触发\n💰 入场: ${sp['entry_price']:,.2f} → 平仓: ~${current_price:,.2f}\n📊 盈亏: {pnl_pct:+.2f}% (${pnl_usd:+.2f}) | 头寸: {size}")
         return {"action": "CLOSED_BY_TRIGGER", "reason": reason, "pnl_pct": pnl_pct}
     
     if position:
@@ -410,7 +415,10 @@ def _execute_inner(dry_run, mode, _CST, coin="BTC"):
                     logger.error(f"Timeout close failed for {coin}: {e}")
                     return {"action": "CLOSE_FAILED", "error": str(e)}
                 record_trade_result(pnl_pct, position["direction"], coin, "TIMEOUT")
-                notify_discord(f"⏰ **超时平仓** {position['direction']} {coin}\n💰 入场: ${position['entry_price']:,.2f}\n📊 盈亏: {pnl_pct:+.2f}% | 持仓 {elapsed:.1f}h")
+                size_val = abs(position.get('size', 0))
+                timeout_pnl_usd = position.get('unrealized_pnl', 0)
+                est_exit = position['entry_price'] * (1 + pnl_pct / 100) if position['direction'] == 'LONG' else position['entry_price'] * (1 - pnl_pct / 100)
+                notify_discord(f"⏰ **[HL] 超时平仓** {position['direction']} {coin}\n💰 入场: ${position['entry_price']:,.2f} → 平仓: ~${est_exit:,.2f}\n📊 盈亏: {pnl_pct:+.2f}% (${timeout_pnl_usd:+.2f}) | 头寸: {size_val} | 持仓 {elapsed:.1f}h")
                 return {"action": "TIMEOUT_CLOSE", "elapsed": elapsed, "pnl_pct": pnl_pct}
         
         # 检查SL/TP是否还在
@@ -708,7 +716,7 @@ def open_position(signal, analysis, coin="BTC"):
     print(f"⏰ 超时平仓时间: {coin_state['position']['deadline']}")
     
     notify_discord(
-        f"🚀 **开仓** {signal} {coin}\n"
+        f"🚀 **[HL] 开仓** {signal} {coin}\n"
         f"💰 入场: ${actual_entry:,.2f} | 数量: {actual_size}\n"
         f"🛑 止损: ${sl_price:,.2f} (-{sl_pct*100:.0f}%) | 🎯 止盈: ${tp_price:,.2f} (+{tp_pct*100:.0f}%)\n"
         f"🔍 Regime: {regime} (DE={de_str})\n"
@@ -873,7 +881,7 @@ def emergency_close(coin, size, is_long, max_retries=3):
     except Exception as e:
         # Persistence failure must not mask the critical RuntimeError path.
         print(f"⚠️ 持久化告警文件失败: {e}")
-    notify_discord(f"🚨🚨🚨 **紧急平仓失败** — {coin} 仓位无保护！需要人工干预！")
+    notify_discord(f"🚨🚨🚨 **[HL] 紧急平仓失败** — {coin} 仓位无保护！需要人工干预！")
     raise RuntimeError(f"紧急平仓失败: {coin} size={size} — 仓位无保护！")
 
 def close_position(position, max_retries=3, backoff_seconds=5, coin=None):
@@ -892,7 +900,7 @@ def close_position(position, max_retries=3, backoff_seconds=5, coin=None):
     if not real_pos:
         print(f"⚠️ 链上无 {coin} 持仓，state 残留。清理 state。")
         save_state({"position": None}, coin)
-        notify_discord(f"ℹ️ {coin} 超时平仓跳过 — 链上已无仓位（可能 SL/TP 已触发）")
+        notify_discord(f"ℹ️ [HL] {coin} 超时平仓跳过 — 链上已无仓位（可能 SL/TP 已触发）")
         return None
     # 用链上真实数据覆盖，防止 size 不一致
     size = abs(real_pos["size"])
