@@ -140,19 +140,21 @@ class TestOptimizeRunBacktest:
         } for i in range(n)]
 
     def test_no_signals(self):
-        from luckytrader.optimize import run_backtest
+        from luckytrader.optimize import run_backtest_on_slice, compute_stats, _cfg
         candles = self._make_flat(100)
-        result = run_backtest(candles, 0.04, 0.07, 48)
-        assert result['count'] == 0
+        trades = run_backtest_on_slice(candles, [], 0.04, 0.07, 48, _cfg)
+        stats = compute_stats(trades)
+        assert stats['count'] == 0
 
     def test_returns_dict_keys(self):
-        from luckytrader.optimize import run_backtest
+        from luckytrader.optimize import run_backtest_on_slice, compute_stats, _cfg
         candles = self._make_flat(100)
-        result = run_backtest(candles, 0.04, 0.07, 48)
-        assert 'count' in result
-        assert 'total' in result
-        assert 'avg' in result
-        assert 'winrate' in result
+        trades = run_backtest_on_slice(candles, [], 0.04, 0.07, 48, _cfg)
+        stats = compute_stats(trades)
+        assert 'count' in stats
+        assert 'total' in stats
+        assert 'avg' in stats
+        assert 'winrate' in stats
 
 
 # ============================================================

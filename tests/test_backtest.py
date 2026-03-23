@@ -118,7 +118,7 @@ class TestBacktestEntryPrice:
     def test_optimizer_entry_uses_next_open(self):
         """monthly_optimize must also use next_open."""
         import inspect
-        from luckytrader.optimize import run_backtest
+        from luckytrader.optimize import run_backtest_on_slice as run_backtest
         source = inspect.getsource(run_backtest)
         assert 'opens[i + 1]' in source or 'opens[i+1]' in source, \
             "Optimizer must use next candle open for entry"
@@ -127,26 +127,26 @@ class TestBacktestEntryPrice:
 class TestMonthlyOptimizer:
     """monthly_optimize.py parameter scanning."""
     
-    def test_current_params_match_live(self):
-        """Optimizer's CURRENT dict must match execute_signal params."""
-        from luckytrader.optimize import CURRENT
+    def test_current_params_from_config(self):
+        """Optimizer must load params from config (same source as execute)."""
+        from luckytrader.optimize import _cfg
         from luckytrader.execute import STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_HOLD_HOURS
         
-        assert CURRENT["sl"] == STOP_LOSS_PCT
-        assert CURRENT["tp"] == TAKE_PROFIT_PCT
-        assert CURRENT["hold"] == MAX_HOLD_HOURS * 2  # 30m bars
+        assert _cfg.risk.stop_loss_pct == STOP_LOSS_PCT
+        assert _cfg.risk.take_profit_pct == TAKE_PROFIT_PCT
+        assert _cfg.risk.max_hold_hours == MAX_HOLD_HOURS
     
     def test_optimizer_uses_detect_signal(self):
         """optimizer run_backtest must use strategy.detect_signal()."""
         import inspect
-        from luckytrader.optimize import run_backtest
+        from luckytrader.optimize import run_backtest_on_slice as run_backtest
         source = inspect.getsource(run_backtest)
         assert 'detect_signal(' in source,             "optimizer must use detect_signal() from strategy.py"
 
     def test_run_backtest_accepts_candles_4h(self):
         """run_backtest must accept candles_4h for trend filter."""
         import inspect
-        from luckytrader.optimize import run_backtest
+        from luckytrader.optimize import run_backtest_on_slice as run_backtest
         sig = inspect.signature(run_backtest)
         assert 'candles_4h' in sig.parameters
 
