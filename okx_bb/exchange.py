@@ -327,8 +327,8 @@ class OKXClient:
         return None
 
     def get_fills(self, instId: Optional[str] = None,
-                  limit: int = 10) -> List[dict]:
-        """Get recent fills (last 3 days)."""
+                  limit: int = 100) -> List[dict]:
+        """Get recent fills (last 3 days). Use get_fills_history for older data."""
         params = {"limit": str(limit)}
         if instId:
             params["instId"] = instId
@@ -336,6 +336,41 @@ class OKXClient:
         if data.get("code") == "0":
             return data.get("data", [])
         return []
+
+    def get_fills_history(self, instId: Optional[str] = None,
+                          instType: str = "SWAP",
+                          limit: int = 100,
+                          before: Optional[str] = None,
+                          after: Optional[str] = None) -> List[dict]:
+        """Get fills history (up to 3 months). Paginate with before/after billId."""
+        params = {"instType": instType, "limit": str(limit)}
+        if instId:
+            params["instId"] = instId
+        if before:
+            params["before"] = before
+        if after:
+            params["after"] = after
+        data = self._request("GET", "/trade/fills-history", params=params)
+        if data.get("code") == "0":
+            return data.get("data", [])
+        return []
+
+    def get_all_fills_history(self, instId: Optional[str] = None,
+                              instType: str = "SWAP") -> List[dict]:
+        """Paginated fetch of ALL fills history (up to 3 months)."""
+        all_fills = []
+        before = None
+        for _ in range(50):
+            fills = self.get_fills_history(
+                instId=instId, instType=instType, before=before
+            )
+            if not fills:
+                break
+            all_fills.extend(fills)
+            before = fills[-1].get("billId")
+            if len(fills) < 100:
+                break
+        return all_fills
 
     def get_algo_order_history(self, ordType: str = "conditional",
                                 instId: Optional[str] = None,

@@ -567,7 +567,9 @@ class SolBBExecutor:
         log.append({
             "coin": result.coin, "direction": direction_str,
             "entry_price": result.entry_price, "exit_price": result.exit_price,
-            "pnl_pct": result.pnl_pct,
+            "size": result.size,
+            "pnl_pct": result.pnl_pct, "pnl_usd": result.pnl_usd,
+            "fees_usd": result.fees_usd,
             "entry_time": entry_time_str, "exit_time": result.exit_time.isoformat(),
             "exit_reason": result.exit_reason.value,
         })
