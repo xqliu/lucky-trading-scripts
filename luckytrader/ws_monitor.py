@@ -724,9 +724,20 @@ class NotificationManager:
 
         emoji = "🎯" if reason == "TP" else "🛑" if reason == "SL" else "⏰"
 
-        message = f"{emoji} **平仓** {close_info.get('direction', '')} {close_info.get('coin', 'BTC')} — {reason}触发\n"
-        message += f"💰 入场: ${close_info.get('entry_price', 0):,.2f} → 平仓: ~${close_info.get('close_price', 0):,.2f}\n"
-        message += f"📊 盈亏: {pnl_pct:+.2f}%\n"
+        coin = close_info.get('coin', 'BTC')
+        size = close_info.get('size', 0)
+        entry_px = close_info.get('entry_price', 0)
+        close_px = close_info.get('close_price', 0)
+        direction = close_info.get('direction', '')
+        # Calculate USD PnL
+        if direction == "LONG":
+            pnl_usd = (close_px - entry_px) * abs(size)
+        else:
+            pnl_usd = (entry_px - close_px) * abs(size)
+
+        message = f"{emoji} **[HL] 平仓** {direction} {coin} — {reason}触发\n"
+        message += f"💰 入场: ${entry_px:,.2f} → 平仓: ~${close_px:,.2f}\n"
+        message += f"📊 盈亏: {pnl_pct:+.2f}% (${pnl_usd:+.2f}) | 头寸: {size}\n"
 
         entry_time = close_info.get('entry_time')
         close_time = close_info.get('close_time')
@@ -743,7 +754,7 @@ class NotificationManager:
         price = signal_info.get('price', 0)
 
         coin = signal_info.get('coin', '???')
-        message = f"📡 **信号检测** {coin} {signal}\n"
+        message = f"📡 **[HL] 信号检测** {coin} {signal}\n"
         message += f"💰 价格: ${price:,.2f}\n"
         if reasons:
             message += f"📋 理由: {'; '.join(reasons)}"
@@ -753,12 +764,12 @@ class NotificationManager:
     def notify_error(self, error_message: str, critical: bool = False):
         """错误通知。critical=True 绕过去重（安全相关告警）"""
         if critical or self.should_send_notification("ERROR", error_message):
-            message = f"⚠️ **系统错误**\n{error_message}"
+            message = f"⚠️ **[HL] 系统错误**\n{error_message}"
             self._send_discord_message(message, force=critical)
 
     def notify_critical_error(self, error_message: str):
         """关键错误告警"""
-        message = f"🚨🚨🚨 **关键错误** 🚨🚨🚨\n{error_message}\n需要立即人工检查！"
+        message = f"🚨🚨🚨 **[HL] 关键错误** 🚨🚨🚨\n{error_message}\n需要立即人工检查！"
         self._send_discord_message(message, force=True)
 
     def should_send_notification(self, notification_type: str, message: str) -> bool:
