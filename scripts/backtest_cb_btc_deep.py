@@ -127,17 +127,33 @@ def run_backtest(candles, threshold, entry_offset=30):
     for i in range(entry_offset + 1, len(candles) - MAX_HOLD_MINS):
         prev_close = candles[i-1]["c"]
         curr = candles[i]
-        change = (curr["c"] - prev_close) / prev_close * 100
-        
-        if abs(change) < threshold:
+
+        # Real-time trigger: check if HIGH or LOW breached threshold vs prev close
+        up_change = (curr["h"] - prev_close) / prev_close * 100
+        down_change = (curr["l"] - prev_close) / prev_close * 100
+
+        is_up_spike = up_change >= threshold
+        is_down_spike = down_change <= -threshold
+
+        if not is_up_spike and not is_down_spike:
             continue
-        
-        is_up = change > 0
+
+        # If both directions spike in same candle, use the larger move
+        if is_up_spike and is_down_spike:
+            is_up = abs(up_change) >= abs(down_change)
+        else:
+            is_up = is_up_spike
+
         direction = "SHORT" if is_up else "LONG"
         entry_price = candles[i - entry_offset]["c"]
-        
-        # CB exit
-        cb_exit = curr["h"] if is_up else curr["l"]
+
+        # CB exit price = the price at which threshold was breached
+        # (not the extreme of the candle — we exit as soon as threshold hit)
+        if is_up:
+            cb_exit = prev_close * (1 + threshold / 100)
+        else:
+            cb_exit = prev_close * (1 - threshold / 100)
+
         if direction == "SHORT":
             cb_pnl = (entry_price - cb_exit) / entry_price * 100
         else:
@@ -153,7 +169,7 @@ def run_backtest(candles, threshold, entry_offset=30):
         results.append({
             "time": curr["t"],
             "month": month,
-            "spike": change,
+            "spike": up_change if is_up else down_change,
             "cb_pnl": cb_pnl,
             "natural_exit": natural["exit"],
             "natural_pnl": natural["pnl"],
