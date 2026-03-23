@@ -767,7 +767,8 @@ class WSMonitor:
                     f"{MSG_PREFIX}📊 OKX BB 平仓: {result.exit_reason.value}\n"
                     f"{result.direction.value} {result.coin}\n"
                     f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
-                    f"PnL: {result.pnl_pct*100:+.2f}%",
+                    f"PnL: {result.pnl_pct*100:+.2f}% (${result.pnl_usd:+.2f})\n"
+                    f"费用: ${result.fees_usd:.2f}",
                     mention=True)
         except Exception as e:
             logger.error(f"check_position error: {e}", exc_info=True)
@@ -875,7 +876,8 @@ class WSMonitor:
                     f"{MSG_PREFIX}📊 OKX BB 平仓: {result.exit_reason.value}\n"
                     f"{result.direction.value} {result.coin}\n"
                     f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
-                    f"PnL: {result.pnl_pct*100:+.2f}%",
+                    f"PnL: {result.pnl_pct*100:+.2f}% (${result.pnl_usd:+.2f})\n"
+                    f"费用: ${result.fees_usd:.2f}",
                     mention=True)
                 if self.cfg.execution.mode != "close_confirm_buffer":
                     await self._atomic_cancel_and_place()
@@ -954,7 +956,8 @@ class WSMonitor:
                         f"{MSG_PREFIX}📊 平仓 (periodic): {result.exit_reason.value}\n"
                         f"{result.direction.value} {result.coin}\n"
                         f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
-                        f"PnL: {result.pnl_pct*100:+.2f}%",
+                        f"PnL: {result.pnl_pct*100:+.2f}% (${result.pnl_usd:+.2f})\n"
+                    f"费用: ${result.fees_usd:.2f}",
                         mention=True)
                     if self.cfg.execution.mode != "close_confirm_buffer":
                         await self._atomic_cancel_and_place()

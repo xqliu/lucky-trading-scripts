@@ -234,7 +234,11 @@ class BBExecutor:
             logger.error("Failed to get instrument info")
             return None
 
-        ctVal = float(inst.get("ctVal", 0.01))  # contract value in coin
+        ctVal_raw = inst.get("ctVal")
+        if not ctVal_raw:
+            logger.error(f"Instrument {self.instId} missing ctVal — refusing to size position")
+            return None
+        ctVal = float(ctVal_raw)  # contract value in coin
         lotSz = float(inst.get("lotSz", 0.01))  # minimum size increment
         minSz = float(inst.get("minSz", 0.01))  # minimum order size
         ticker = self.client.get_ticker(self.instId)
@@ -376,6 +380,10 @@ class BBExecutor:
         else:
             tp_ord_id = tp_result["data"][0].get("ordId", "") if tp_result["data"] else ""
 
+        # Get ctVal for PnL calculation at close time
+        inst = self.client.get_instrument(self.instId)
+        ct_val = float(inst.get("ctVal", self.CONTRACT_SIZE)) if inst else self.CONTRACT_SIZE
+
         # Save position state
         now = datetime.now(timezone.utc).isoformat()
         pos_state = {
@@ -388,6 +396,7 @@ class BBExecutor:
             "tp_order_id": tp_ord_id,
             "entry_time": now,
             "entry_bar_count": 0,
+            "ct_val": ct_val,
         }
         self.save_position(pos_state)
 
@@ -681,19 +690,36 @@ class BBExecutor:
         }
         exit_reason = reason_map.get(reason, ExitReason.TP)
 
+        # Calculate USD PnL and fees
+        ct_val = float(pos.get("ct_val", self.CONTRACT_SIZE))
+        size = float(pos["size"])
+        notional = pos["entry_price"] * size * ct_val
+        pnl_usd = net_pnl_pct * notional
+
+        # Get actual fees from fills if available
+        fees_usd = 0.0
+        try:
+            fills = self.client.get_fills(instId=self.instId, limit=10)
+            for f in fills:
+                fee_val = float(f.get("fee", 0))
+                fees_usd += abs(fee_val)
+        except Exception:
+            # Fallback: estimate from fee_pct
+            fees_usd = fee_pct * notional
+
         result = TradeResult(
             coin=self.cfg.coin,
             direction=Direction(pos["direction"]),
             entry_price=pos["entry_price"],
             exit_price=exit_price,
-            size=float(pos["size"]),
+            size=size,
             pnl_pct=net_pnl_pct,
-            pnl_usd=0,  # TODO: calculate from actual fills
+            pnl_usd=round(pnl_usd, 4),
             entry_time=datetime.fromisoformat(pos["entry_time"]),
             exit_time=exit_time,
             exit_reason=exit_reason,
             strategy="bb_breakout",
-            fees_usd=0,
+            fees_usd=round(fees_usd, 4),
         )
 
         # Append to trade log

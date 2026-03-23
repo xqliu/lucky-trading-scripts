@@ -368,6 +368,8 @@ class OKXClient:
                 break
             all_fills.extend(fills)
             before = fills[-1].get("billId")
+            if not before:
+                break  # No cursor — stop to avoid infinite loop
             if len(fills) < 100:
                 break
         return all_fills

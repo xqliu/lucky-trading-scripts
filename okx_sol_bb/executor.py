@@ -201,7 +201,11 @@ class SolBBExecutor:
             logger.error("Failed to get instrument info")
             return None
 
-        ctVal = float(inst.get("ctVal", 1))  # SOL contract value
+        ctVal_raw = inst.get("ctVal")
+        if not ctVal_raw:
+            logger.error(f"Instrument {self.instId} missing ctVal — refusing to size position")
+            return None
+        ctVal = float(ctVal_raw)  # SOL contract value
         lotSz = float(inst.get("lotSz", 1))
         minSz = float(inst.get("minSz", 1))
         ticker = self.client.get_ticker(self.instId)
@@ -312,12 +316,17 @@ class SolBBExecutor:
             logger.error(f"TP failed (SL active): {tp_result}")
             send_discord(f"⚠️ OKX SOL BB: TP设置失败，仅有SL保护")
 
+        # Get ctVal for PnL calculation at close time
+        inst = self.client.get_instrument(self.instId)
+        ct_val = float(inst.get("ctVal", self.CONTRACT_SIZE)) if inst else self.CONTRACT_SIZE
+
         now = datetime.now(timezone.utc).isoformat()
         pos_state = {
             "direction": direction, "entry_price": entry_price,
             "size": sz, "sl_price": sl_price, "tp_price": tp_price,
             "sl_algo_id": sl_algo_id, "tp_order_id": tp_ord_id,
             "entry_time": now, "entry_bar_count": 0,
+            "ct_val": ct_val,
         }
         self.save_position(pos_state)
 
@@ -523,13 +532,29 @@ class SolBBExecutor:
                        "timeout": ExitReason.TIMEOUT, "unknown": ExitReason.TIMEOUT}
         exit_reason = reason_map.get(reason, ExitReason.TP)
 
+        # Calculate USD PnL and fees
+        ct_val = float(pos.get("ct_val", self.CONTRACT_SIZE))
+        size = float(pos["size"])
+        notional = pos["entry_price"] * size * ct_val
+        pnl_usd = net_pnl_pct * notional
+
+        # Get actual fees from fills if available
+        fees_usd = 0.0
+        try:
+            fills = self.client.get_fills(instId=self.instId, limit=10)
+            for f in fills:
+                fee_val = float(f.get("fee", 0))
+                fees_usd += abs(fee_val)
+        except Exception:
+            fees_usd = fee_pct * notional
+
         result = TradeResult(
             coin=self.cfg.coin, direction=Direction(pos["direction"]),
             entry_price=pos["entry_price"], exit_price=exit_price,
-            size=float(pos["size"]), pnl_pct=net_pnl_pct, pnl_usd=0,
+            size=size, pnl_pct=net_pnl_pct, pnl_usd=round(pnl_usd, 4),
             entry_time=datetime.fromisoformat(pos["entry_time"]),
             exit_time=exit_time, exit_reason=exit_reason,
-            strategy="bb_mean_reversion", fees_usd=0)
+            strategy="bb_mean_reversion", fees_usd=round(fees_usd, 4))
 
         self._append_trade_log(result)
         return result

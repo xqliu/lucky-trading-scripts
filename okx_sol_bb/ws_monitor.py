@@ -348,7 +348,8 @@ class WSMonitor:
                     f"📊 OKX SOL BB 平仓: {result.exit_reason.value}\n"
                     f"{result.direction.value} {result.coin}\n"
                     f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
-                    f"PnL: {result.pnl_pct*100:+.2f}%",
+                    f"PnL: {result.pnl_pct*100:+.2f}% (${result.pnl_usd:+.2f})\n"
+                    f"费用: ${result.fees_usd:.2f}",
                     mention=True)
         except Exception as e:
             logger.error(f"check_position error: {e}", exc_info=True)
@@ -444,7 +445,8 @@ class WSMonitor:
                     f"📊 OKX SOL BB 平仓: {result.exit_reason.value}\n"
                     f"{result.direction.value} {result.coin}\n"
                     f"入场: ${result.entry_price:.2f} → 出场: ${result.exit_price:.2f}\n"
-                    f"PnL: {result.pnl_pct*100:+.2f}%",
+                    f"PnL: {result.pnl_pct*100:+.2f}% (${result.pnl_usd:+.2f})\n"
+                    f"费用: ${result.fees_usd:.2f}",
                     mention=True)
         except Exception as e:
             logger.error(f"check error: {e}", exc_info=True)
@@ -568,7 +570,8 @@ class WSMonitor:
                     await send_discord(
                         f"📊 SOL BB 平仓 (periodic): {result.exit_reason.value}\n"
                         f"{result.direction.value} @ ${result.entry_price:.2f} → ${result.exit_price:.2f}\n"
-                        f"PnL: {result.pnl_pct*100:+.2f}%",
+                        f"PnL: {result.pnl_pct*100:+.2f}% (${result.pnl_usd:+.2f})\n"
+                    f"费用: ${result.fees_usd:.2f}",
                         mention=True)
                     continue
 
