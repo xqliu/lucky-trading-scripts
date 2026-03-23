@@ -1,4 +1,11 @@
-"""Tests for Circuit Breaker in WSMonitor."""
+"""Tests for Circuit Breaker in WSMonitor.
+
+CB logic:
+- Compares current real-time 1m close vs previous candle's final close
+- Triggers IMMEDIATELY when threshold breached (not waiting for candle close)
+- Only triggers ONCE per 1m candle
+- On candle switch: previous candle's last real-time close becomes new reference
+"""
 
 import asyncio
 import pytest
@@ -14,7 +21,6 @@ def monitor():
          patch("luckytrader.ws_monitor.TradeExecutor"):
         from luckytrader.ws_monitor import WSMonitor
         m = WSMonitor()
-        # Make notification async
         m.notification_manager.async_send_notification = AsyncMock()
         m.notification_manager.async_notify_error = AsyncMock()
         return m
@@ -33,50 +39,106 @@ def make_kline(close: float, time_ms: int) -> dict:
     }
 
 
-class TestCBCandelDetection:
-    """Test that CB only triggers on candle close, not intra-candle updates."""
+SHORT_POS = {"direction": "SHORT", "entry_price": 70000, "size": -0.001, "coin": "BTC"}
+LONG_POS = {"direction": "LONG", "entry_price": 70000, "size": 0.001, "coin": "BTC"}
+
+
+class TestCBRealTimeTrigger:
+    """CB should trigger in real-time within a candle, not wait for close."""
 
     @pytest.mark.asyncio
-    async def test_first_candle_no_trigger(self, monitor):
-        """First candle should just record close, not trigger."""
+    async def test_triggers_mid_candle(self, monitor):
+        """Spike within a candle should trigger immediately."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            mock_exec.get_position.return_value = {"direction": "SHORT", "entry_price": 70000, "size": 0.001, "coin": "BTC"}
-            # First candle
+            mock_exec.get_position.return_value = SHORT_POS
+            mock_exec.close_position.return_value = {"action": "CLOSED", "exit_price": 70400}
+
+            # Candle 1: establish reference
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            # Second update of same candle (should not trigger)
-            await monitor._check_circuit_breaker(make_kline(70500, 1000))
-            mock_exec.get_position.assert_not_called()
+            # Candle 2 starts
+            await monitor._check_circuit_breaker(make_kline(70100, 2000))
+            # Still candle 2, price spikes > 0.5% vs candle 1 close (70000)
+            await monitor._check_circuit_breaker(make_kline(70400, 2000))
+
+            mock_exec.close_position.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_intra_candle_updates_ignored(self, monitor):
-        """Multiple updates within same candle should not trigger CB."""
+    async def test_first_update_establishes_reference(self, monitor):
+        """Very first update establishes reference but doesn't trigger (no comparison yet)."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            # Candle 1 — establish baseline
+            # Single update — just records, no comparison possible
+            await monitor._check_circuit_breaker(make_kline(70000, 1000))
+            mock_exec.get_position.assert_not_called()
+            # Second update in same candle CAN trigger (compares vs first)
+            mock_exec.get_position.return_value = SHORT_POS
+            mock_exec.close_position.return_value = {"action": "CLOSED", "exit_price": 71000}
+            await monitor._check_circuit_breaker(make_kline(71000, 1000))  # +1.4%
+            mock_exec.close_position.assert_called_once()  # correctly triggers
+
+
+class TestCBOncePerCandle:
+    """CB should only trigger once per 1m candle."""
+
+    @pytest.mark.asyncio
+    async def test_only_triggers_once(self, monitor):
+        """After triggering, further updates in same candle should not re-trigger."""
+        with patch("luckytrader.ws_monitor.execute") as mock_exec:
+            mock_exec.get_position.return_value = SHORT_POS
+            mock_exec.close_position.return_value = {"action": "CLOSED", "exit_price": 70400}
+
+            # Establish reference
+            await monitor._check_circuit_breaker(make_kline(70000, 1000))
+            # New candle, spike
+            await monitor._check_circuit_breaker(make_kline(70400, 2000))
+            assert mock_exec.close_position.call_count == 1
+            # More updates in same candle — should NOT trigger again
+            await monitor._check_circuit_breaker(make_kline(70600, 2000))
+            await monitor._check_circuit_breaker(make_kline(70800, 2000))
+            assert mock_exec.close_position.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_new_candle_resets_trigger(self, monitor):
+        """New candle should allow triggering again."""
+        with patch("luckytrader.ws_monitor.execute") as mock_exec:
+            mock_exec.get_position.side_effect = [
+                SHORT_POS,  # first trigger
+                SHORT_POS,  # second trigger (new candle)
+            ]
+            mock_exec.close_position.return_value = {"action": "CLOSED", "exit_price": 70400}
+
+            # Candle 1: reference
+            await monitor._check_circuit_breaker(make_kline(70000, 1000))
+            # Candle 2: trigger
+            await monitor._check_circuit_breaker(make_kline(70400, 2000))
+            assert mock_exec.close_position.call_count == 1
+            # Candle 3: reference updates to candle 2's last close (70400)
+            # Spike again from 70400 base
+            await monitor._check_circuit_breaker(make_kline(70800, 3000))  # +0.57% vs 70400
+            assert mock_exec.close_position.call_count == 2
+
+
+class TestCBReferenceUpdate:
+    """Test that reference close updates correctly on candle switch."""
+
+    @pytest.mark.asyncio
+    async def test_reference_uses_last_realtime_close(self, monitor):
+        """When candle switches, reference should be last real-time close, not first."""
+        with patch("luckytrader.ws_monitor.execute") as mock_exec:
+            mock_exec.get_position.return_value = SHORT_POS
+
+            # Candle 1: opens at 70000, drifts to 70200
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
             await monitor._check_circuit_breaker(make_kline(70100, 1000))
             await monitor._check_circuit_breaker(make_kline(70200, 1000))
-            # New candle 2 — close of candle 1 = 70200 (last update before time change)
-            await monitor._check_circuit_breaker(make_kline(70300, 2000))
-            # Candle 2 still within threshold (70300 vs 70200 = +0.14%), no trigger
+            # Candle 2: reference should be 70200 (last update of candle 1)
+            # 70500 vs 70200 = +0.43% — below threshold
+            await monitor._check_circuit_breaker(make_kline(70500, 2000))
             mock_exec.close_position.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_candle_close_triggers_check(self, monitor):
-        """Spike on candle close (time change) should trigger position check."""
-        with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            mock_exec.get_position.return_value = None  # No position
-            # Candle 1
-            await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            # Candle 2 starts — candle 1 closed at 70000
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            # Candle 3 starts — candle 2 closed at 70000, no spike
-            await monitor._check_circuit_breaker(make_kline(70000, 3000))
-            # Candle 3 updates with big move
-            await monitor._check_circuit_breaker(make_kline(70500, 3000))
-            # Candle 4 starts — candle 3 closed at 70500 (vs 70000 = +0.71%)
-            await monitor._check_circuit_breaker(make_kline(70600, 4000))
-            # Should have checked position (spike > 0.5%)
-            mock_exec.get_position.assert_called()
+            # 70560 vs 70200 = +0.51% — above threshold
+            mock_exec.close_position.return_value = {"action": "CLOSED", "exit_price": 70560}
+            await monitor._check_circuit_breaker(make_kline(70560, 2000))
+            mock_exec.close_position.assert_called_once()
 
 
 class TestCBAdverseDetection:
@@ -86,52 +148,32 @@ class TestCBAdverseDetection:
     async def test_up_spike_adverse_to_short(self, monitor):
         """Up spike should be adverse to SHORT position."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            mock_exec.get_position.return_value = {
-                "direction": "SHORT", "entry_price": 70000, "size": -0.001, "coin": "BTC"
-            }
+            mock_exec.get_position.return_value = SHORT_POS
             mock_exec.close_position.return_value = {"action": "CLOSED", "exit_price": 70400}
 
-            # Set up two closed candles
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            # Candle 3 with spike
-            await monitor._check_circuit_breaker(make_kline(70400, 3000))
-            # Candle 4 — triggers check on candle 3 close (70400 vs 70000 = +0.57%)
-            await monitor._check_circuit_breaker(make_kline(70500, 4000))
-            
+            await monitor._check_circuit_breaker(make_kline(70400, 2000))  # +0.57%
             mock_exec.close_position.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_down_spike_adverse_to_long(self, monitor):
         """Down spike should be adverse to LONG position."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            mock_exec.get_position.return_value = {
-                "direction": "LONG", "entry_price": 70000, "size": 0.001, "coin": "BTC"
-            }
+            mock_exec.get_position.return_value = LONG_POS
             mock_exec.close_position.return_value = {"action": "CLOSED", "exit_price": 69600}
 
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            await monitor._check_circuit_breaker(make_kline(69600, 3000))
-            # Candle 4 triggers — 69600 vs 70000 = -0.57%
-            await monitor._check_circuit_breaker(make_kline(69500, 4000))
-
+            await monitor._check_circuit_breaker(make_kline(69600, 2000))  # -0.57%
             mock_exec.close_position.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_favorable_spike_no_close(self, monitor):
-        """Favorable spike (same direction as position) should NOT close."""
+        """Favorable spike should NOT close position."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            mock_exec.get_position.return_value = {
-                "direction": "LONG", "entry_price": 70000, "size": 0.001, "coin": "BTC"
-            }
+            mock_exec.get_position.return_value = LONG_POS
 
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            await monitor._check_circuit_breaker(make_kline(70400, 3000))
-            # Up spike with LONG = favorable
-            await monitor._check_circuit_breaker(make_kline(70500, 4000))
-
+            await monitor._check_circuit_breaker(make_kline(70400, 2000))  # UP for LONG = good
             mock_exec.close_position.assert_not_called()
 
     @pytest.mark.asyncio
@@ -141,10 +183,7 @@ class TestCBAdverseDetection:
             mock_exec.get_position.return_value = None
 
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            await monitor._check_circuit_breaker(make_kline(70400, 3000))
-            await monitor._check_circuit_breaker(make_kline(70500, 4000))
-
+            await monitor._check_circuit_breaker(make_kline(70400, 2000))
             mock_exec.close_position.assert_not_called()
 
 
@@ -155,76 +194,53 @@ class TestCBThreshold:
     async def test_below_threshold_no_trigger(self, monitor):
         """Change below 0.5% should not trigger."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            mock_exec.get_position.return_value = {
-                "direction": "SHORT", "entry_price": 70000, "size": -0.001, "coin": "BTC"
-            }
+            mock_exec.get_position.return_value = SHORT_POS
 
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            # +0.3% — below threshold
-            await monitor._check_circuit_breaker(make_kline(70210, 3000))
-            await monitor._check_circuit_breaker(make_kline(70300, 4000))
-
+            await monitor._check_circuit_breaker(make_kline(70300, 2000))  # +0.43%
             mock_exec.close_position.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_exactly_at_threshold(self, monitor):
-        """Change exactly at 0.5% should trigger."""
+    async def test_at_threshold_triggers(self, monitor):
+        """Change at exactly 0.5% should trigger."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            mock_exec.get_position.return_value = {
-                "direction": "SHORT", "entry_price": 70000, "size": -0.001, "coin": "BTC"
-            }
+            mock_exec.get_position.return_value = SHORT_POS
             mock_exec.close_position.return_value = {"action": "CLOSED", "exit_price": 70350}
 
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            # Exactly +0.5%
-            await monitor._check_circuit_breaker(make_kline(70350, 3000))
-            await monitor._check_circuit_breaker(make_kline(70400, 4000))
-
+            await monitor._check_circuit_breaker(make_kline(70350, 2000))  # exactly +0.5%
             mock_exec.close_position.assert_called_once()
 
 
 class TestCBPnLCalculation:
-    """Test PnL calculation in notification."""
+    """Test PnL calculation."""
 
     @pytest.mark.asyncio
-    async def test_short_pnl_loss(self, monitor):
-        """SHORT position closed at higher price = loss."""
+    async def test_short_loss_pnl(self, monitor):
+        """SHORT closed at higher price = loss."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            mock_exec.get_position.return_value = {
-                "direction": "SHORT", "entry_price": 70000, "size": -0.001, "coin": "BTC"
-            }
+            mock_exec.get_position.return_value = SHORT_POS
             mock_exec.close_position.return_value = {"action": "CLOSED", "exit_price": 70400}
 
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            await monitor._check_circuit_breaker(make_kline(70400, 3000))
-            await monitor._check_circuit_breaker(make_kline(70500, 4000))
+            await monitor._check_circuit_breaker(make_kline(70400, 2000))
 
-            # Check notification was sent
-            monitor.notification_manager.async_send_notification.assert_called_once()
             msg = monitor.notification_manager.async_send_notification.call_args[0][0]
             assert "Circuit Breaker" in msg
             assert "SHORT" in msg
-            # PnL should be negative (entry 70000, exit 70400 for SHORT)
-            assert "-" in msg  # negative PnL
+            # entry 70000, exit 70400, size 0.001 → pnl_usd = 0.001 * (70000-70400) = -$0.40
+            assert "-$0.40" in msg or "-0.40" in msg
 
     @pytest.mark.asyncio
-    async def test_long_pnl_loss(self, monitor):
-        """LONG position closed at lower price = loss."""
+    async def test_long_loss_pnl(self, monitor):
+        """LONG closed at lower price = loss."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            mock_exec.get_position.return_value = {
-                "direction": "LONG", "entry_price": 70000, "size": 0.001, "coin": "BTC"
-            }
+            mock_exec.get_position.return_value = LONG_POS
             mock_exec.close_position.return_value = {"action": "CLOSED", "exit_price": 69600}
 
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            await monitor._check_circuit_breaker(make_kline(69600, 3000))
-            await monitor._check_circuit_breaker(make_kline(69500, 4000))
+            await monitor._check_circuit_breaker(make_kline(69600, 2000))
 
-            monitor.notification_manager.async_send_notification.assert_called_once()
             msg = monitor.notification_manager.async_send_notification.call_args[0][0]
             assert "LONG" in msg
 
@@ -232,77 +248,39 @@ class TestCBPnLCalculation:
     async def test_close_failure_notifies_error(self, monitor):
         """Failed close should send error notification."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            mock_exec.get_position.return_value = {
-                "direction": "SHORT", "entry_price": 70000, "size": -0.001, "coin": "BTC"
-            }
-            mock_exec.close_position.return_value = {"action": "ERROR", "error": "API timeout"}
+            mock_exec.get_position.return_value = SHORT_POS
+            mock_exec.close_position.return_value = {"action": "ERROR", "error": "timeout"}
 
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            await monitor._check_circuit_breaker(make_kline(70400, 3000))
-            await monitor._check_circuit_breaker(make_kline(70500, 4000))
+            await monitor._check_circuit_breaker(make_kline(70400, 2000))
 
             monitor.notification_manager.async_notify_error.assert_called_once()
-
-
-class TestCBDisabled:
-    """Test CB can be disabled."""
-
-    @pytest.mark.asyncio
-    async def test_disabled_cb_skips(self, monitor):
-        """When CB_ENABLED=False, 1m klines should not be processed."""
-        monitor.CB_ENABLED = False
-        with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            mock_exec.get_position.return_value = {
-                "direction": "SHORT", "entry_price": 70000, "size": -0.001, "coin": "BTC"
-            }
-
-            # Even with a huge spike, nothing should happen
-            await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            await monitor._check_circuit_breaker(make_kline(72000, 3000))
-            await monitor._check_circuit_breaker(make_kline(72100, 4000))
-
-            # CB is disabled but _check_circuit_breaker is called directly...
-            # The real gate is in _message_loop (checks CB_ENABLED before calling)
-            # So this test validates the function still works — the gate is elsewhere
-            # Let's test the _message_loop gate instead would need full integration test
 
 
 class TestCBEdgeCases:
     """Edge cases."""
 
     @pytest.mark.asyncio
-    async def test_exception_in_get_position_handled(self, monitor):
+    async def test_exception_handled(self, monitor):
         """Exception in get_position should not crash."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
             mock_exec.get_position.side_effect = Exception("API error")
 
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            await monitor._check_circuit_breaker(make_kline(70400, 3000))
-            # Should not crash
-            await monitor._check_circuit_breaker(make_kline(70500, 4000))
+            await monitor._check_circuit_breaker(make_kline(70400, 2000))
+            # Should not crash — just logged
 
     @pytest.mark.asyncio
     async def test_rapid_spikes_only_close_once(self, monitor):
-        """After CB closes position, next spike should find no position."""
+        """After CB closes, next spike in same candle should not re-close."""
         with patch("luckytrader.ws_monitor.execute") as mock_exec:
-            # First call: has position, second call: no position (just closed)
-            mock_exec.get_position.side_effect = [
-                {"direction": "SHORT", "entry_price": 70000, "size": -0.001, "coin": "BTC"},
-                None,  # Position already closed
-            ]
+            mock_exec.get_position.return_value = SHORT_POS
             mock_exec.close_position.return_value = {"action": "CLOSED", "exit_price": 70400}
 
             await monitor._check_circuit_breaker(make_kline(70000, 1000))
-            await monitor._check_circuit_breaker(make_kline(70000, 2000))
-            # First spike
-            await monitor._check_circuit_breaker(make_kline(70400, 3000))
-            await monitor._check_circuit_breaker(make_kline(70500, 4000))
-            # Second spike — no position now
-            await monitor._check_circuit_breaker(make_kline(71000, 5000))
-            await monitor._check_circuit_breaker(make_kline(71100, 6000))
+            # Multiple spikes in same candle
+            await monitor._check_circuit_breaker(make_kline(70400, 2000))
+            await monitor._check_circuit_breaker(make_kline(70600, 2000))
+            await monitor._check_circuit_breaker(make_kline(71000, 2000))
 
-            # close_position called only once
             assert mock_exec.close_position.call_count == 1

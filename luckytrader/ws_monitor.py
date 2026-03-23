@@ -954,9 +954,10 @@ class WSMonitor:
         self._loop = None
 
         # Circuit Breaker state
-        self._cb_prev_close = None  # 上一根已收盘 1m K 线 close
-        self._cb_current_candle_time = 0  # 当前 1m K 线时间戳（用于检测收盘）
-        self._cb_last_close = None  # 当前 K 线的最新 close（WS 实时更新）
+        self._cb_prev_candle_close = None  # 上一根已收盘 1m K 线的 close（比较基准）
+        self._cb_last_realtime_close = None  # 当前 K 线的最新实时 close（用于在换 K 线时记录收盘）
+        self._cb_current_candle_time = 0  # 当前 1m K 线时间戳
+        self._cb_triggered_this_candle = False  # 当前 K 线内是否已触发过 CB（只触发一次）
 
         # 设置信号处理（优雅停机）
         sig.signal(sig.SIGTERM, self._signal_handler)
@@ -1114,28 +1115,28 @@ class WSMonitor:
             curr_close = float(kline_data["close"])
             candle_time = int(kline_data["time"])
 
-            # WS pushes real-time updates for the CURRENT candle (every ~1s).
-            # We only want to compare CLOSED candles (when candle_time changes).
-            if candle_time == self._cb_current_candle_time:
-                # Same candle, just update latest close
-                self._cb_last_close = curr_close
+            # Detect new candle (= previous candle closed)
+            if candle_time != self._cb_current_candle_time:
+                # New candle → update reference to last candle's final close
+                if self._cb_current_candle_time != 0 and self._cb_last_realtime_close is not None:
+                    self._cb_prev_candle_close = self._cb_last_realtime_close
+                self._cb_current_candle_time = candle_time
+                self._cb_triggered_this_candle = False
+
+            # Always track latest real-time close (used when candle switches)
+            self._cb_last_realtime_close = curr_close
+
+            # Need a reference close from previous candle
+            if self._cb_prev_candle_close is None:
+                self._cb_prev_candle_close = curr_close
                 return
 
-            # New candle started → previous candle just closed
-            # The close of the previous candle = self._cb_last_close (last update before time change)
-            closed_close = self._cb_last_close if self._cb_last_close is not None else curr_close
-            self._cb_current_candle_time = candle_time
-            self._cb_last_close = curr_close
-
-            # Need previous closed candle to compare
-            if self._cb_prev_close is None:
-                self._cb_prev_close = closed_close
+            # Already triggered this candle — don't trigger again
+            if self._cb_triggered_this_candle:
                 return
 
-            prev = self._cb_prev_close
-            self._cb_prev_close = closed_close
-
-            change_pct = (closed_close - prev) / prev * 100
+            # Real-time comparison: current price vs previous candle's close
+            change_pct = (curr_close - self._cb_prev_candle_close) / self._cb_prev_candle_close * 100
 
             if abs(change_pct) < self.CB_THRESHOLD:
                 return
@@ -1160,6 +1161,7 @@ class WSMonitor:
                 return
 
             # ADVERSE SPIKE → Market close immediately
+            self._cb_triggered_this_candle = True
             logger.warning(f"CB TRIGGERED: {self.CB_COIN} {pos_direction} position, "
                           f"adverse 1m move {change_pct:+.3f}%")
 
@@ -1172,7 +1174,7 @@ class WSMonitor:
             )
 
             if close_result and close_result.get("action") == "CLOSED":
-                exit_price = close_result.get("exit_price", closed_close)
+                exit_price = close_result.get("exit_price", curr_close)
                 if pos_direction == "SHORT":
                     pnl_pct = (entry_price - exit_price) / entry_price * 100
                     pnl_usd = abs(size) * (entry_price - exit_price)
