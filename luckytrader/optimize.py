@@ -39,7 +39,7 @@ def run_backtest_on_slice(candles_30m, candles_4h, sl, tp, hold, cfg, coin_cfg=N
         range_bars = cfg.strategy.range_bars
         lookback_bars = cfg.strategy.lookback_bars
 
-    start = max(range_bars, lookback_bars) + 5
+    start = max(range_bars, lookback_bars) + 2  # align with backtest.run_backtest
     trades = []
     in_trade_until = 0
 
@@ -113,8 +113,9 @@ def tag_regime(candles_30m, trades, de_lookback_days=7):
                     t['de'] = round(de, 3)
                 else:
                     t['regime'] = 'unknown'
-            except:
+            except Exception as e:
                 t['regime'] = 'unknown'
+                # DE computation failed — non-critical, continue
         else:
             t['regime'] = 'unknown'
 
@@ -191,10 +192,13 @@ def optimize_coin(coin, days=180):
     split_idx = int(total_bars * 0.7)
     train_30m = candles_30m[:split_idx]
     test_30m = candles_30m[split_idx:]
-    # 4h split proportionally
+    # 4h: include overlap for test set (trend EMA needs ~48 bars warmup)
+    # Training uses first 70%, test uses last 30% but with 60-bar 4h overlap
     split_4h = int(len(candles_4h) * 0.7) if candles_4h else 0
     train_4h = candles_4h[:split_4h] if candles_4h else []
-    test_4h = candles_4h[split_4h:] if candles_4h else []
+    overlap_4h = 60  # bars of 4h to carry over for EMA warmup
+    test_4h_start = max(0, split_4h - overlap_4h)
+    test_4h = candles_4h[test_4h_start:] if candles_4h else []
 
     train_days = len(train_30m) / 48
     test_days = len(test_30m) / 48
@@ -278,10 +282,13 @@ def optimize_coin(coin, days=180):
         print(f"    横盘: {best['regime']['range']['count']}笔 | {best['regime']['range']['avg']:+.3f}%/笔 | 胜率{best['regime']['range']['winrate']}%")
         print(f"    趋势: {best['regime']['trend']['count']}笔 | {best['regime']['trend']['avg']:+.3f}%/笔 | 胜率{best['regime']['trend']['winrate']}%")
 
-    # Sanity check
+    # Sanity check — compare against current params ON TEST SET for fair comparison
     if best:
         best_params = {"sl": best["sl"], "tp": best["tp"], "hold": best["hold"]}
-        warnings = sanity_check(best_params, best["test"], current_stats, coin)
+        current_test_for_sanity = compute_stats(
+            run_backtest_on_slice(test_30m, test_4h, current_sl, current_tp, current_hold, _cfg, coin_cfg)
+        )
+        warnings = sanity_check(best_params, best["test"], current_test_for_sanity, coin)
         if warnings:
             print(f"\n  ⚠️ 常识关卡警告:")
             for w in warnings:
@@ -398,7 +405,7 @@ if __name__ == "__main__":
     if suggestion_file.exists():
         try:
             history = json.loads(suggestion_file.read_text())
-        except:
+        except Exception:
             history = []
 
     history.append({
