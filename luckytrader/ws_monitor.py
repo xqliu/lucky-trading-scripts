@@ -373,6 +373,7 @@ class TradeExecutor:
         self._regime_check_interval = 3600  # DE 基于日线，每小时重算一次足够
         self._early_validation_done = {}  # per-coin: {coin: True/False}
         self._opening_lock = False  # 防止竞态条件导致重复开仓
+        self._config = get_config()
 
     async def execute_signal(self, signal_result: Dict, coin: str = "BTC") -> Dict:
         """执行交易信号——直接开仓，不重新分析（async，不阻塞事件循环）"""
@@ -435,7 +436,7 @@ class TradeExecutor:
 
         entry_time = datetime.fromisoformat(pos["entry_time"])
         coin_cfg = execute._get_coin_params(coin)
-        max_hold_h = coin_cfg.get('max_hold_hours', self._config.risk.max_hold_hours if hasattr(self, '_config') else 60)
+        max_hold_h = coin_cfg.get('max_hold_hours', self._config.risk.max_hold_hours)
         elapsed_h = (datetime.now(timezone.utc) - entry_time).total_seconds() / 3600
 
         if elapsed_h < max_hold_h:
@@ -453,14 +454,16 @@ class TradeExecutor:
         entry_price = pos["entry_price"]
         size = abs(position["size"])
         is_long = direction == "LONG"
-        current_price = get_market_price(coin)
+        current_price = await asyncio.to_thread(get_market_price, coin)
         if direction == "LONG":
             pnl_pct = (current_price - entry_price) / entry_price * 100
         else:
             pnl_pct = (entry_price - current_price) / entry_price * 100
 
-        execute.close_and_cleanup(
-            coin, is_long, size, reason="TIMEOUT",
+        await asyncio.to_thread(
+            execute.close_and_cleanup,
+            coin, is_long, size,
+            reason="TIMEOUT",
             pnl_pct=pnl_pct,
             extra_msg=f"持仓 {elapsed_h:.1f}h 超过 {max_hold_h}h 限制"
         )

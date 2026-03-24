@@ -141,3 +141,8 @@ class TestMaxHoldTimeout:
             _, kwargs = mock_close.call_args
             # SHORT: (70000 - 68000) / 70000 * 100 = 2.857%
             assert abs(kwargs["pnl_pct"] - 2.857) < 0.01
+
+    def test_trade_executor_has_config(self, trade_executor):
+        """TradeExecutor should own config directly, not rely on hasattr fallback."""
+        assert hasattr(trade_executor, "_config")
+        assert trade_executor._config is not None
