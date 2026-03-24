@@ -15,6 +15,10 @@ from core.types import ExitReason, Direction
 import core.notify as _notify
 _notify.send_discord = lambda *a, **kw: None
 
+# Also patch the already-imported reference in executor module
+import okx_sol_bb.executor as _executor
+_executor.send_discord = lambda *a, **kw: None
+
 
 def make_config():
     return OKXSolConfig(
