@@ -148,7 +148,7 @@ def generate_chart(coin='BTC', output_path=None, position=None, signal_result=No
     histogram = histogram_full[offset:]
     
     # ====== 绘图 ======
-    fig, (ax1, ax_macd, ax2) = plt.subplots(3, 1, figsize=(14, 9),
+    fig, (ax1, ax_macd, ax2) = plt.subplots(3, 1, figsize=(14, 12),
                                      gridspec_kw={'height_ratios': [3.5, 1.2, 1]},
                                      facecolor=BG_COLOR)
     fig.subplots_adjust(hspace=0.08, left=0.08, right=0.95, top=0.92, bottom=0.08)
