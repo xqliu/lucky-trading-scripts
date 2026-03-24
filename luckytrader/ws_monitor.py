@@ -636,6 +636,46 @@ class TradeExecutor:
                     # 异常不标记 done，下个循环重试
                     logger.error(f"Early validation error (will retry): {e}")
 
+                # ─── Max hold timeout check ───
+                try:
+                    from datetime import datetime, timezone, timedelta
+                    max_hold_h = self._config.risk.max_hold_hours
+                    for th_coin in execute.TRADING_COINS:
+                        coin_state = await asyncio.to_thread(execute.load_state, th_coin)
+                        pos = coin_state.get("position") if coin_state else None
+                        if not (pos and pos.get("entry_time")):
+                            continue
+                        entry_time = datetime.fromisoformat(pos["entry_time"])
+                        # Per-coin max_hold from config
+                        coin_cfg = execute._get_coin_params(th_coin)
+                        coin_max_hold = coin_cfg.get('max_hold_hours', max_hold_h)
+                        elapsed_h = (datetime.now(timezone.utc) - entry_time).total_seconds() / 3600
+                        if elapsed_h >= coin_max_hold:
+                            logger.warning(f"⏰ Max hold timeout {th_coin}: {elapsed_h:.1f}h >= {coin_max_hold}h, closing!")
+                            position = await asyncio.to_thread(execute.get_position, th_coin)
+                            if position is None:
+                                # Already closed, just clean state
+                                await asyncio.to_thread(execute.save_state, {"position": None}, th_coin)
+                                continue
+                            direction = pos["direction"]
+                            entry_price = pos["entry_price"]
+                            size = abs(position["size"])
+                            is_long = direction == "LONG"
+                            from luckytrader.trade import get_market_price
+                            current_price = get_market_price(th_coin)
+                            if direction == "LONG":
+                                pnl_pct = (current_price - entry_price) / entry_price * 100
+                            else:
+                                pnl_pct = (entry_price - current_price) / entry_price * 100
+                            execute.close_and_cleanup(
+                                th_coin, is_long, size, reason="TIMEOUT",
+                                pnl_pct=pnl_pct,
+                                extra_msg=f"持仓 {elapsed_h:.1f}h 超过 {coin_max_hold}h 限制"
+                            )
+                            logger.info(f"⏰ Timeout close done for {th_coin}: {elapsed_h:.1f}h, PnL {pnl_pct:+.2f}%")
+                except Exception as e:
+                    logger.error(f"Max hold timeout check error: {e}")
+
                 # 在线程中调用同步 trailing 模块，避免阻塞事件循环
                 alerts = await asyncio.to_thread(trailing.main)
 
