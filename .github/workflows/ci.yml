@@ -1,0 +1,76 @@
+name: CI — Tests & Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install coverage pytest-cov pytest-asyncio websockets websocket-client
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest \
+            --cov=luckytrader --cov=okx_bb --cov=okx_sol_bb --cov=core \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-branch \
+            -q
+
+      - name: Upload coverage artifact
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  coverage-gate:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install coverage pytest-cov pytest-asyncio websockets websocket-client
+
+      - name: Run branch coverage
+        run: |
+          python -m pytest \
+            --cov=luckytrader --cov=okx_bb --cov=okx_sol_bb --cov=core \
+            --cov-report=term-missing \
+            --cov-branch \
+            -q 2>&1 | tee coverage_output.txt
+
+      - name: Enforce core-path branch coverage ≥ 90%
+        run: python .github/scripts/check_coverage.py coverage_output.txt
