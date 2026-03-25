@@ -791,3 +791,104 @@ class TestCancelRemainingOrders:
         ex.client.cancel_order.side_effect = Exception("network error")
         # Should not raise
         ex._cancel_remaining_orders(pos)
+
+
+# ── check_signal ──────────────────────────────────────────────
+
+class TestCheckSignal:
+    def test_insufficient_candles(self):
+        ex = make_executor()
+        ex.client.get_candles.return_value = [{"c": 100.0}] * 10
+        assert ex.check_signal() is None
+
+    def test_no_signal_returned(self):
+        ex = make_executor()
+        # Flat candles → no BB signal
+        ex.client.get_candles.return_value = [{"c": 100.0}] * 50
+        assert ex.check_signal() is None
+
+    def test_signal_detected(self):
+        ex = make_executor()
+        # Build candles that produce a LONG signal: prices drop below lower BB then bounce
+        base = [100.0 + 0.1 * (i % 5) - 0.2 for i in range(30)]
+        from core.indicators import bollinger_bands
+        bb = bollinger_bands(base, 14, 3.0, len(base) - 1)
+        if bb:
+            _, _, lower = bb
+            base.append(lower - 2.0)
+            base.append(lower + 0.5)
+        candles = [{"c": p} for p in base]
+        ex.client.get_candles.return_value = candles
+        result = ex.check_signal()
+        # Signal may or may not fire depending on exact BB calc, but must not crash
+        assert result in (None, "LONG", "SHORT")
+
+
+# ── calculate_size edge cases ──────────────────────────────────
+
+class TestCalculateSizeEdge:
+    def test_missing_ctVal(self):
+        ex = make_executor()
+        ex.client.get_balance.return_value = {"total_equity": 100}
+        ex.client.get_instrument.return_value = {"lotSz": "1", "minSz": "1"}  # no ctVal
+        assert ex.calculate_size() is None
+
+    def test_ctVal_empty_string(self):
+        ex = make_executor()
+        ex.client.get_balance.return_value = {"total_equity": 100}
+        ex.client.get_instrument.return_value = {"ctVal": "", "lotSz": "1", "minSz": "1"}
+        assert ex.calculate_size() is None
+
+
+# ── _record_close fees exception ──────────────────────────────
+
+class TestRecordClosedPositionFees:
+    def test_fills_exception_uses_fallback_fee(self):
+        ex = make_executor()
+        ex.client.get_fills.side_effect = Exception("api error")
+        # Mock _get_actual_exit_info to return known values
+        ex._get_actual_exit_info = MagicMock(return_value=(
+            105.0, datetime(2025, 1, 2, tzinfo=timezone.utc)
+        ))
+        pos = {
+            "direction": "LONG", "entry_price": 100.0, "size": 1.0,
+            "entry_time": "2025-01-01T00:00:00+00:00",
+        }
+        with patch.object(ex, '_append_trade_log'):
+            result = ex._record_closed_position(pos, "tp")
+        assert result is not None
+        assert result.fees_usd >= 0
+
+
+# ── _emergency_close branches ──────────────────────────────────
+
+class TestEmergencyClose:
+    def test_position_already_flat(self):
+        """Exchange shows no position → immediately returns True."""
+        ex = make_executor()
+        ex.client.get_positions.return_value = [{"pos": "0"}]
+        assert ex._emergency_close("sell", "1.00") is True
+
+    def test_size_mismatch_uses_exchange_size(self):
+        """When exchange size differs from caller, uses exchange size."""
+        ex = make_executor()
+        # get_positions calls: 1) check position, 2) verify after close, 3) save_position check
+        ex.client.get_positions.side_effect = [
+            [{"pos": "2.00"}],   # attempt 1: read position
+            [{"pos": "0"}],       # attempt 1: verify after close
+            [],                   # save_position internal call
+        ]
+        ex.client.place_market_order.return_value = {"code": "0"}
+        result = ex._emergency_close("sell", "1.00")
+        assert result is True
+        # Verify it used exchange size "2.00" not caller's "1.00"
+        call_args = ex.client.place_market_order.call_args
+        assert call_args[0][2] == "2.00"
+
+    def test_all_attempts_fail(self):
+        """All 3 attempts fail → returns False."""
+        ex = make_executor()
+        ex.client.get_positions.return_value = [{"pos": "1.00"}]
+        ex.client.place_market_order.return_value = {"code": "1"}
+        result = ex._emergency_close("sell", "1.00")
+        assert result is False

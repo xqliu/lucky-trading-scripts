@@ -91,3 +91,12 @@ class TestGetBBLevels:
         closes = [100.0] * 30
         result = get_bb_levels(closes, 14, 3.0, 20)
         assert result is None
+
+
+class TestDetectSignalEdgeCases:
+    """Additional edge cases for detect_signal branch coverage."""
+
+    def test_flat_market_returns_none(self):
+        """When BB returns None (flat market), detect_signal returns None."""
+        closes = [100.0] * 30  # flat → bollinger_bands returns None
+        assert detect_signal(closes, 14, 3.0, 20) is None
