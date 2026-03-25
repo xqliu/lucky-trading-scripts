@@ -1,6 +1,7 @@
 """
 Tests for signal_check.py — core signal detection logic.
 """
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -176,6 +177,9 @@ class TestAnalyze:
         result = analyze('BTC')
         assert 'error' in result
     
+    @pytest.mark.skipif(
+        not os.path.exists(os.path.expanduser("~/.openclaw/workspace/trading/config/config.toml")),
+        reason="Production config not available (CI)")
     def test_vol_threshold_is_1_25(self, mock_hl):
         """Verify the volume threshold is 1.25x via config."""
         from luckytrader.config import get_config
@@ -253,4 +257,4 @@ class TestFormatReport:
         assert 'LONG' in report
         assert f"-{cfg.risk.stop_loss_pct*100:.0f}%" in report
         assert f"+{cfg.risk.take_profit_pct*100:.0f}%" in report
-        assert '60h' in report or '96h' in report  # max_hold from config
+        assert f"{cfg.risk.max_hold_hours}h" in report  # max_hold from config

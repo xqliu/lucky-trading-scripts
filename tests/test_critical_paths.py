@@ -222,9 +222,14 @@ class TestNoSilentExceptions:
             f"Bare 'except: pass' in critical files:\n" + "\n".join(actual_issues)
 
 
-# ─── Test 6: Config consistency ───
+# ─── Test 6: Config consistency (production config only) ───
+_has_production_config = os.path.exists(
+    os.path.expanduser("~/.openclaw/workspace/trading/config/config.toml")
+)
+
+@pytest.mark.skipif(not _has_production_config, reason="Production config not available (CI)")
 class TestConfigConsistency:
-    """验证 config.toml 关键参数"""
+    """验证 config.toml 关键参数 — 仅在有生产配置时运行"""
 
     def test_max_hold_hours(self):
         from luckytrader.config import get_config

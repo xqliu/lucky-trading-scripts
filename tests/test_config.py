@@ -6,9 +6,14 @@ import os
 from pathlib import Path
 
 
+_has_production_config = os.path.exists(
+    os.path.expanduser("~/.openclaw/workspace/trading/config/config.toml")
+)
+
 class TestConfigLoader:
     """Config loading and validation."""
     
+    @pytest.mark.skipif(not _has_production_config, reason="Production config not available (CI)")
     def test_load_default_config(self):
         from luckytrader.config import get_config
         cfg = get_config()

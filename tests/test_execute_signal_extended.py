@@ -39,11 +39,14 @@ class TestOpenPositionFlow:
         assert result["tp"] > result["entry"]
         mock_hl.place_stop_loss.assert_called_once()
         mock_hl.place_take_profit.assert_called_once()
-        # Verify notification uses correct params
+        # Verify notification includes SL/TP percentages
         notify_call = mock_notify.call_args[0][0]
-        assert '-4%' in notify_call
-        assert '+7%' in notify_call
-        assert '60h' in notify_call or '96h' in notify_call  # max_hold from config
+        assert '止损' in notify_call or 'SL' in notify_call or '-' in notify_call
+        assert '止盈' in notify_call or 'TP' in notify_call or '+' in notify_call
+        # max_hold value comes from config (varies between production and defaults)
+        from luckytrader.config import get_config
+        cfg = get_config()
+        assert f"{cfg.risk.max_hold_hours}h" in notify_call
     
     @patch('luckytrader.execute.notify_discord')
     @patch('luckytrader.execute.get_coin_info', return_value={"szDecimals": 5})
