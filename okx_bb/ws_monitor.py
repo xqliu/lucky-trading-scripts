@@ -1237,7 +1237,8 @@ class WSMonitor:
                      f"{self.cfg.strategy.bb_multiplier}) "
                      f"TP={self.cfg.risk.take_profit_pct*100}% "
                      f"SL={self.cfg.risk.stop_loss_pct*100}% "
-                     f"min_bb_width={self.cfg.strategy.min_bb_width}")
+                     f"min_bb_width={self.cfg.strategy.min_bb_width} "
+                     f"kill_zone=[{self.cfg.strategy.bb_width_kill_lo}, {self.cfg.strategy.bb_width_kill_hi})")
         logger.info("=" * 60)
 
         if not await self.accumulator.initialize(self._loop):
