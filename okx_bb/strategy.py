@@ -22,13 +22,17 @@ from core.indicators import ema, bollinger_bands
 def detect_signal(closes: List[float], bb_period: int, bb_mult: float,
                   trend_period: int, trend_lookback: int,
                   idx: int,
-                  min_bb_width: float = 0.0) -> Optional[str]:
+                  min_bb_width: float = 0.0,
+                  bb_width_kill_lo: float = 0.0,
+                  bb_width_kill_hi: float = 0.0) -> Optional[str]:
     """Detect BB breakout signal at bar `idx`.
 
     BB from PRIOR bars [idx-period : idx] — no look-ahead.
     Trend: EMA direction over last `trend_lookback` bars.
-    min_bb_width: minimum BB bandwidth (upper-lower)/middle to accept signal.
-                  0.0 = no filter (backward compatible).
+
+    BB width filters (two modes, can combine):
+      min_bb_width: simple threshold — skip if width < min_bb_width
+      bb_width_kill_lo/hi: kill zone — skip if kill_lo <= width < kill_hi
     """
     min_bars = max(bb_period + 1, trend_period + trend_lookback + 1)
     if idx < min_bars:
@@ -41,11 +45,16 @@ def detect_signal(closes: List[float], bb_period: int, bb_mult: float,
     mid, upper, lower = bb
     c = closes[idx]
 
-    # BB width filter: skip signals when BB is too narrow (choppy market)
-    if min_bb_width > 0 and mid > 0:
+    # BB width filters
+    if mid > 0:
         bb_width = (upper - lower) / mid
-        if bb_width < min_bb_width:
+        # Simple threshold filter
+        if min_bb_width > 0 and bb_width < min_bb_width:
             return None
+        # Kill zone filter: reject signals in the "dead zone"
+        if bb_width_kill_lo > 0 and bb_width_kill_hi > bb_width_kill_lo:
+            if bb_width_kill_lo <= bb_width < bb_width_kill_hi:
+                return None
 
     # Trend EMA — use 3x period for convergence
     ema_start = max(0, idx - trend_period * 3)

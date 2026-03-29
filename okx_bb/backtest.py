@@ -135,7 +135,9 @@ def backtest_close(candles: list, cfg: OKXConfig) -> List[Trade]:
 
         signal = detect_signal(closes, cfg.strategy.bb_period, cfg.strategy.bb_multiplier,
                                cfg.strategy.trend_ema_period, cfg.strategy.trend_lookback, idx,
-                               min_bb_width=cfg.strategy.min_bb_width)
+                               min_bb_width=cfg.strategy.min_bb_width,
+                               bb_width_kill_lo=cfg.strategy.bb_width_kill_lo,
+                               bb_width_kill_hi=cfg.strategy.bb_width_kill_hi)
         if signal:
             entry_price = candles[idx + 1]["o"]  # next bar open
             trade = simulate_trade(candles, idx + 1, signal, entry_price,
@@ -179,9 +181,13 @@ def backtest_intrabar(candles: list, cfg: OKXConfig) -> List[Trade]:
         mid, upper, lower = bb
 
         # BB width filter
-        if cfg.strategy.min_bb_width > 0 and mid > 0:
+        if mid > 0:
             bb_width = (upper - lower) / mid
-            if bb_width < cfg.strategy.min_bb_width:
+            if cfg.strategy.min_bb_width > 0 and bb_width < cfg.strategy.min_bb_width:
+                continue
+            if (cfg.strategy.bb_width_kill_lo > 0 and
+                    cfg.strategy.bb_width_kill_hi > cfg.strategy.bb_width_kill_lo and
+                    cfg.strategy.bb_width_kill_lo <= bb_width < cfg.strategy.bb_width_kill_hi):
                 continue
 
         trend = get_trend(closes, idx, cfg.strategy.trend_ema_period,
@@ -246,9 +252,13 @@ def backtest_close_confirm_buffer(candles: list, cfg: OKXConfig) -> List[Trade]:
         mid, upper, lower = bb
 
         # BB width filter
-        if cfg.strategy.min_bb_width > 0 and mid > 0:
+        if mid > 0:
             bb_width = (upper - lower) / mid
-            if bb_width < cfg.strategy.min_bb_width:
+            if cfg.strategy.min_bb_width > 0 and bb_width < cfg.strategy.min_bb_width:
+                continue
+            if (cfg.strategy.bb_width_kill_lo > 0 and
+                    cfg.strategy.bb_width_kill_hi > cfg.strategy.bb_width_kill_lo and
+                    cfg.strategy.bb_width_kill_lo <= bb_width < cfg.strategy.bb_width_kill_hi):
                 continue
 
         trend = get_trend(closes, idx, cfg.strategy.trend_ema_period,

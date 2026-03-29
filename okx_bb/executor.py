@@ -202,6 +202,8 @@ class BBExecutor:
             trend_lookback=self.cfg.strategy.trend_lookback,
             idx=idx,
             min_bb_width=self.cfg.strategy.min_bb_width,
+            bb_width_kill_lo=self.cfg.strategy.bb_width_kill_lo,
+            bb_width_kill_hi=self.cfg.strategy.bb_width_kill_hi,
         )
 
         if signal:

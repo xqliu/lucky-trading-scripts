@@ -29,6 +29,8 @@ class StrategyConfig:
     trend_ema_period: int = 96
     trend_lookback: int = 8
     min_bb_width: float = 0.0  # BB bandwidth filter (0=disabled)
+    bb_width_kill_lo: float = 0.0  # Kill zone lower bound (0=disabled)
+    bb_width_kill_hi: float = 0.0  # Kill zone upper bound
 
 
 @dataclass
@@ -95,6 +97,8 @@ def load_config() -> OKXConfig:
                 trend_ema_period=s.get("trend_ema_period", 96),
                 trend_lookback=s.get("trend_lookback", 8),
                 min_bb_width=s.get("min_bb_width", 0.0),
+                bb_width_kill_lo=s.get("bb_width_kill_lo", 0.0),
+                bb_width_kill_hi=s.get("bb_width_kill_hi", 0.0),
             )
         if "risk" in raw:
             r = raw["risk"]

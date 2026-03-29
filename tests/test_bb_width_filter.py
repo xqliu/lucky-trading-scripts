@@ -360,3 +360,121 @@ class TestBacktestBBWidthFilter:
         eth_config.strategy.min_bb_width = 99.0
         trades = backtest_close_confirm_buffer(sample_candles, eth_config)
         assert len(trades) == 0
+
+
+# ── Kill Zone Tests ──
+
+class TestKillZoneFilter:
+    """BB width kill zone: reject signals when kill_lo <= width < kill_hi."""
+
+    def test_kill_zone_blocks_middle(self):
+        """Signal with width in kill zone should be blocked."""
+        from okx_bb.strategy import detect_signal
+        from core.indicators import bollinger_bands
+        import numpy as np
+        np.random.seed(42)
+        prices = [100 + np.random.randn() * 5 for _ in range(200)]
+        bb = bollinger_bands(prices, 20, 2.5, 199)
+        if bb is None:
+            return
+        mid, upper, lower = bb
+        w = (upper - lower) / mid
+        # Set kill zone to exactly bracket the current width
+        r = detect_signal(prices, 20, 2.5, 96, 8, 199,
+                          bb_width_kill_lo=w - 0.001, bb_width_kill_hi=w + 0.001)
+        assert r is None
+
+    def test_kill_zone_passes_outside(self):
+        """Signal with width outside kill zone should pass."""
+        from okx_bb.strategy import detect_signal
+        import numpy as np
+        np.random.seed(42)
+        prices = [100 + np.random.randn() * 5 for _ in range(200)]
+        # Kill zone far away from actual width
+        r1 = detect_signal(prices, 20, 2.5, 96, 8, 199,
+                           bb_width_kill_lo=0.001, bb_width_kill_hi=0.002)
+        r2 = detect_signal(prices, 20, 2.5, 96, 8, 199, min_bb_width=0.0)
+        assert r1 == r2
+
+    def test_kill_zone_disabled_when_lo_zero(self):
+        """kill_lo=0 should disable kill zone."""
+        from okx_bb.strategy import detect_signal
+        import numpy as np
+        np.random.seed(42)
+        prices = [100 + np.random.randn() * 5 for _ in range(200)]
+        r1 = detect_signal(prices, 20, 2.5, 96, 8, 199,
+                           bb_width_kill_lo=0.0, bb_width_kill_hi=0.1)
+        r2 = detect_signal(prices, 20, 2.5, 96, 8, 199)
+        assert r1 == r2
+
+    def test_kill_zone_disabled_when_hi_le_lo(self):
+        """kill_hi <= kill_lo should disable kill zone."""
+        from okx_bb.strategy import detect_signal
+        import numpy as np
+        np.random.seed(42)
+        prices = [100 + np.random.randn() * 5 for _ in range(200)]
+        r1 = detect_signal(prices, 20, 2.5, 96, 8, 199,
+                           bb_width_kill_lo=0.05, bb_width_kill_hi=0.03)
+        r2 = detect_signal(prices, 20, 2.5, 96, 8, 199)
+        assert r1 == r2
+
+    def test_kill_zone_config_loading(self, tmp_path):
+        """Config loads kill zone params from TOML."""
+        toml_content = """
+[strategy]
+bb_period = 20
+bb_multiplier = 2.5
+bb_width_kill_lo = 0.04
+bb_width_kill_hi = 0.055
+
+[risk]
+take_profit_pct = 0.04
+
+[fees]
+taker_fee = 0.0005
+"""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text(toml_content)
+        with patch.dict(os.environ, {"OKX_BB_CONFIG_DIR": str(config_dir)}):
+            import importlib
+            import okx_bb.config
+            importlib.reload(okx_bb.config)
+            cfg = okx_bb.config.load_config()
+            assert cfg.strategy.bb_width_kill_lo == 0.04
+            assert cfg.strategy.bb_width_kill_hi == 0.055
+
+    def test_kill_zone_default_zero(self):
+        """Default kill zone params are 0 (disabled)."""
+        from okx_bb.config import StrategyConfig
+        cfg = StrategyConfig()
+        assert cfg.bb_width_kill_lo == 0.0
+        assert cfg.bb_width_kill_hi == 0.0
+
+    def test_backtest_kill_zone_reduces_trades(self):
+        """Kill zone in backtest should reduce trade count."""
+        import numpy as np
+        from okx_bb.config import OKXConfig, StrategyConfig, RiskConfig, FeeConfig, ExecutionConfig
+        from okx_bb.backtest import backtest_close_confirm_buffer
+        np.random.seed(42)
+        candles = []
+        price = 2000.0
+        ts = 1700000000000
+        for i in range(500):
+            change = np.random.randn() * 30
+            o = price; c = price + change
+            h = max(o, c) + abs(np.random.randn() * 10)
+            l = min(o, c) - abs(np.random.randn() * 10)
+            candles.append({"ts": ts, "o": o, "c": c, "h": h, "l": l})
+            price = c; ts += 1800000
+
+        cfg_no = OKXConfig(instId="TEST", strategy=StrategyConfig(min_bb_width=0.0),
+                           risk=RiskConfig(stop_loss_pct=0.03, take_profit_pct=0.04, max_hold_bars=120),
+                           fees=FeeConfig(), execution=ExecutionConfig())
+        cfg_kill = OKXConfig(instId="TEST",
+                             strategy=StrategyConfig(bb_width_kill_lo=0.01, bb_width_kill_hi=0.10),
+                             risk=RiskConfig(stop_loss_pct=0.03, take_profit_pct=0.04, max_hold_bars=120),
+                             fees=FeeConfig(), execution=ExecutionConfig())
+        t_no = backtest_close_confirm_buffer(candles, cfg_no)
+        t_kill = backtest_close_confirm_buffer(candles, cfg_kill)
+        assert len(t_no) >= len(t_kill)
