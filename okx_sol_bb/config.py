@@ -26,6 +26,7 @@ def _find_config_dir() -> Path:
 class StrategyConfig:
     bb_period: int = 14
     bb_multiplier: float = 3.0
+    min_bb_width: float = 0.0  # BB bandwidth filter (0=disabled)
 
 
 @dataclass
@@ -79,6 +80,7 @@ def load_config() -> OKXSolConfig:
             strategy = StrategyConfig(
                 bb_period=s.get("bb_period", 14),
                 bb_multiplier=s.get("bb_multiplier", 3.0),
+                min_bb_width=s.get("min_bb_width", 0.0),
             )
         if "risk" in raw:
             r = raw["risk"]

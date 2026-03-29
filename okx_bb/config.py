@@ -28,6 +28,7 @@ class StrategyConfig:
     bb_multiplier: float = 2.5
     trend_ema_period: int = 96
     trend_lookback: int = 8
+    min_bb_width: float = 0.0  # BB bandwidth filter (0=disabled)
 
 
 @dataclass
@@ -93,6 +94,7 @@ def load_config() -> OKXConfig:
                 bb_multiplier=s.get("bb_multiplier", 2.5),
                 trend_ema_period=s.get("trend_ema_period", 96),
                 trend_lookback=s.get("trend_lookback", 8),
+                min_bb_width=s.get("min_bb_width", 0.0),
             )
         if "risk" in raw:
             r = raw["risk"]

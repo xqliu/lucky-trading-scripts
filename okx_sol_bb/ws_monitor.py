@@ -382,7 +382,8 @@ class WSMonitor:
                 closes,
                 bb_period=self.cfg.strategy.bb_period,
                 bb_mult=self.cfg.strategy.bb_multiplier,
-                idx=idx)
+                idx=idx,
+                min_bb_width=self.cfg.strategy.min_bb_width)
 
             if not signal:
                 bb = get_bb_levels(closes, self.cfg.strategy.bb_period,

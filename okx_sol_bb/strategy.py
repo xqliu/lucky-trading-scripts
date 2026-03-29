@@ -22,7 +22,7 @@ from core.indicators import bollinger_bands
 
 
 def detect_signal(closes: List[float], bb_period: int, bb_mult: float,
-                  idx: int) -> Optional[str]:
+                  idx: int, min_bb_width: float = 0.0) -> Optional[str]:
     """Detect BB mean-reversion signal at bar `idx`.
 
     BB from PRIOR bars [idx-period : idx] — no look-ahead.
@@ -35,6 +35,7 @@ def detect_signal(closes: List[float], bb_period: int, bb_mult: float,
         bb_period: BB lookback period (in bars)
         bb_mult: BB standard deviation multiplier
         idx: Current bar index (signal checks idx-1 → idx cross)
+        min_bb_width: minimum BB bandwidth to accept signal (0=disabled)
 
     Returns:
         'LONG' | 'SHORT' | None
@@ -46,7 +47,13 @@ def detect_signal(closes: List[float], bb_period: int, bb_mult: float,
     if bb is None:
         return None
 
-    _, upper, lower = bb
+    mid, upper, lower = bb
+
+    # BB width filter: skip signals when BB is too narrow
+    if min_bb_width > 0 and mid > 0:
+        bb_width = (upper - lower) / mid
+        if bb_width < min_bb_width:
+            return None
 
     prev_close = closes[idx - 1]
     curr_close = closes[idx]

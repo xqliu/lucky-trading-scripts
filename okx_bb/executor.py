@@ -201,6 +201,7 @@ class BBExecutor:
             trend_period=self.cfg.strategy.trend_ema_period,
             trend_lookback=self.cfg.strategy.trend_lookback,
             idx=idx,
+            min_bb_width=self.cfg.strategy.min_bb_width,
         )
 
         if signal:

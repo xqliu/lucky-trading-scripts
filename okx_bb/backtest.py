@@ -134,7 +134,8 @@ def backtest_close(candles: list, cfg: OKXConfig) -> List[Trade]:
         in_trade = False
 
         signal = detect_signal(closes, cfg.strategy.bb_period, cfg.strategy.bb_multiplier,
-                               cfg.strategy.trend_ema_period, cfg.strategy.trend_lookback, idx)
+                               cfg.strategy.trend_ema_period, cfg.strategy.trend_lookback, idx,
+                               min_bb_width=cfg.strategy.min_bb_width)
         if signal:
             entry_price = candles[idx + 1]["o"]  # next bar open
             trade = simulate_trade(candles, idx + 1, signal, entry_price,
@@ -175,7 +176,13 @@ def backtest_intrabar(candles: list, cfg: OKXConfig) -> List[Trade]:
         bb = get_bb_levels(closes, cfg.strategy.bb_period, cfg.strategy.bb_multiplier, idx)
         if bb is None:
             continue
-        _, upper, lower = bb
+        mid, upper, lower = bb
+
+        # BB width filter
+        if cfg.strategy.min_bb_width > 0 and mid > 0:
+            bb_width = (upper - lower) / mid
+            if bb_width < cfg.strategy.min_bb_width:
+                continue
 
         trend = get_trend(closes, idx, cfg.strategy.trend_ema_period,
                           cfg.strategy.trend_lookback)
@@ -236,7 +243,13 @@ def backtest_close_confirm_buffer(candles: list, cfg: OKXConfig) -> List[Trade]:
         bb = get_bb_levels(closes, cfg.strategy.bb_period, cfg.strategy.bb_multiplier, idx)
         if bb is None:
             continue
-        _, upper, lower = bb
+        mid, upper, lower = bb
+
+        # BB width filter
+        if cfg.strategy.min_bb_width > 0 and mid > 0:
+            bb_width = (upper - lower) / mid
+            if bb_width < cfg.strategy.min_bb_width:
+                continue
 
         trend = get_trend(closes, idx, cfg.strategy.trend_ema_period,
                           cfg.strategy.trend_lookback)

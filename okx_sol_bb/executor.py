@@ -176,6 +176,7 @@ class SolBBExecutor:
             bb_period=self.cfg.strategy.bb_period,
             bb_mult=self.cfg.strategy.bb_multiplier,
             idx=idx,
+            min_bb_width=self.cfg.strategy.min_bb_width,
         )
 
         if signal:
