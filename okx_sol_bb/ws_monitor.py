@@ -814,7 +814,8 @@ class WSMonitor:
         logger.info(f"{self.cfg.instId} BB({self.cfg.strategy.bb_period}, "
                      f"{self.cfg.strategy.bb_multiplier}) "
                      f"TP={self.cfg.risk.take_profit_pct*100}% "
-                     f"SL={self.cfg.risk.stop_loss_pct*100}%")
+                     f"SL={self.cfg.risk.stop_loss_pct*100}% "
+                     f"min_bb_width={self.cfg.strategy.min_bb_width}")
         logger.info("=" * 60)
 
         if not await self.accumulator.initialize(self._loop):
