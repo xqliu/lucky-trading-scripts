@@ -9,8 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / 'repos' / 'lucky-trading-scripts'))
 
-from hyperliquid.info import Info
-from luckytrader.signal import analyze
+from luckytrader.signal import analyze, get_user_state
 
 
 def load_hl_wallet():
@@ -41,8 +40,7 @@ def fmt_m(v: float) -> str:
 
 
 def render_hl() -> str:
-    info = Info(skip_ws=True)
-    state = info.user_state(load_hl_wallet())
+    state = get_user_state(load_hl_wallet())
     acct = float(state['marginSummary']['accountValue'])
 
     positions = []

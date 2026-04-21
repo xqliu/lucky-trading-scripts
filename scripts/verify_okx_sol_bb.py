@@ -58,10 +58,14 @@ def main():
     # 3. Position consistency
     local_pos = ex.load_position()
     exchange_pos = ex.client.get_positions(cfg.instId)
+    private_api_ok = exchange_pos is not None
     has_exchange = exchange_pos and any(float(p.get("pos", 0)) != 0 for p in exchange_pos)
     has_local = bool(local_pos)
 
     pos_str = "无持仓"
+    if not private_api_ok:
+        has_issues = True
+        pos_str = "❌ 私有API不可用（无法校验交易所仓位/SL）"
     if has_exchange:
         p = next(pp for pp in exchange_pos if float(pp.get("pos", 0)) != 0)
         ex_dir = "LONG" if float(p.get("pos", 0)) > 0 else "SHORT"
@@ -87,7 +91,10 @@ def main():
 
         # Check SL on exchange
         algos = ex.client.get_algo_orders(cfg.instId, "conditional")
-        if not any(a.get("slTriggerPx") for a in (algos or [])):
+        if not algos:
+            has_issues = True
+            pos_str += " ❌无法校验SL"
+        elif not any(a.get("slTriggerPx") for a in (algos or [])):
             has_issues = True
             pos_str += " ❌无SL"
     elif has_local and not has_exchange:
@@ -116,6 +123,8 @@ def main():
 
     if svc_status != "active":
         report.append(f"❌ 服务异常: {svc_status}")
+    if not private_api_ok:
+        report.append("❌ 私有API校验失败：请检查命令环境/配置，当前仅验证了公开行情逻辑")
 
     print("\n".join(report))
     return 1 if has_issues else 0

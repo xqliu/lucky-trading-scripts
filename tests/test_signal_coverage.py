@@ -5,7 +5,8 @@ from unittest.mock import patch, MagicMock
 
 class TestGetMarketContext:
     def test_success(self, mock_hl):
-        from luckytrader.signal import get_market_context
+        from luckytrader.signal import get_market_context, _API_CACHE
+        _API_CACHE.clear()
         mock_resp = MagicMock()
         mock_resp.json.return_value = [
             {"universe": [{"name": "BTC"}, {"name": "ETH"}, {"name": "SOL"}]},
@@ -19,18 +20,39 @@ class TestGetMarketContext:
             ctx = get_market_context()
         assert "BTC" in ctx
         assert "ETH" in ctx
+        assert "SOL" in ctx
         assert ctx["BTC"]["mark_price"] == 67000.0
 
     def test_exception_returns_empty(self, mock_hl):
-        from luckytrader.signal import get_market_context
+        from luckytrader.signal import get_market_context, _API_CACHE
+        _API_CACHE.clear()
         with patch('requests.post', side_effect=Exception("timeout")):
             ctx = get_market_context()
         assert ctx == {}
 
+    def test_caches_market_context_within_ttl(self, mock_hl):
+        from luckytrader.signal import get_market_context, _API_CACHE
+        _API_CACHE.clear()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [
+            {"universe": [{"name": "BTC"}, {"name": "ETH"}, {"name": "SOL"}]},
+            [
+                {"funding": "0.0001", "openInterest": "5000", "markPx": "67000"},
+                {"funding": "0.0002", "openInterest": "3000", "markPx": "3500"},
+                {"funding": "0.0003", "openInterest": "1000", "markPx": "150"},
+            ],
+        ]
+        with patch('requests.post', return_value=mock_resp) as mock_post:
+            first = get_market_context()
+            second = get_market_context()
+        assert first == second
+        assert mock_post.call_count == 1
+
 
 class TestGetRecentFills:
     def test_success(self, mock_hl):
-        from luckytrader.signal import get_recent_fills
+        from luckytrader.signal import get_recent_fills, _API_CACHE
+        _API_CACHE.clear()
         mock_resp = MagicMock()
         mock_resp.json.return_value = [
             {"coin": "BTC", "side": "B", "sz": "0.001", "px": "67000", "time": 1700000000000},
@@ -43,7 +65,8 @@ class TestGetRecentFills:
         assert fills[1]["side"] == "SELL"
 
     def test_exception_returns_empty(self, mock_hl):
-        from luckytrader.signal import get_recent_fills
+        from luckytrader.signal import get_recent_fills, _API_CACHE
+        _API_CACHE.clear()
         with patch('requests.post', side_effect=Exception("network")):
             fills = get_recent_fills()
         assert fills == []
@@ -51,7 +74,8 @@ class TestGetRecentFills:
 
 class TestGetRecentTrades:
     def test_paired_close_open(self, mock_hl):
-        from luckytrader.signal import get_recent_trades
+        from luckytrader.signal import get_recent_trades, _API_CACHE
+        _API_CACHE.clear()
         mock_resp = MagicMock()
         mock_resp.json.return_value = [
             {"coin": "BTC", "side": "A", "sz": "0.001", "px": "68000", "time": 1700000010000,
@@ -66,8 +90,26 @@ class TestGetRecentTrades:
         assert trades[0]["status"] == "closed"
         assert trades[0]["pnl"] == 1.5
 
+    def test_recent_trades_reuses_user_fills_cache(self, mock_hl):
+        from luckytrader.signal import get_recent_trades, get_recent_fills, _API_CACHE
+        _API_CACHE.clear()
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [
+            {"coin": "BTC", "side": "A", "sz": "0.001", "px": "68000", "time": 1700000010000,
+             "dir": "Close Long", "closedPnl": "1.5"},
+            {"coin": "BTC", "side": "B", "sz": "0.001", "px": "67000", "time": 1700000000000,
+             "dir": "Open Long", "closedPnl": "0"},
+        ]
+        with patch('requests.post', return_value=mock_resp) as mock_post:
+            fills = get_recent_fills(limit=1)
+            trades = get_recent_trades(limit=3)
+        assert len(fills) == 1
+        assert len(trades) == 1
+        assert mock_post.call_count == 1
+
     def test_open_position(self, mock_hl):
-        from luckytrader.signal import get_recent_trades
+        from luckytrader.signal import get_recent_trades, _API_CACHE
+        _API_CACHE.clear()
         mock_resp = MagicMock()
         mock_resp.json.return_value = [
             {"coin": "ETH", "side": "A", "sz": "0.01", "px": "3500", "time": 1700000000000,
@@ -80,13 +122,15 @@ class TestGetRecentTrades:
         assert trades[0]["status"] == "open"
 
     def test_exception_returns_empty(self, mock_hl):
-        from luckytrader.signal import get_recent_trades
+        from luckytrader.signal import get_recent_trades, _API_CACHE
+        _API_CACHE.clear()
         with patch('requests.post', side_effect=Exception("api down")):
             trades = get_recent_trades()
         assert trades == []
 
     def test_close_without_matching_open(self, mock_hl):
-        from luckytrader.signal import get_recent_trades
+        from luckytrader.signal import get_recent_trades, _API_CACHE
+        _API_CACHE.clear()
         mock_resp = MagicMock()
         mock_resp.json.return_value = [
             {"coin": "BTC", "side": "A", "sz": "0.001", "px": "68000", "time": 1700000010000,

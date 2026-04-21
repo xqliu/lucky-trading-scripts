@@ -72,6 +72,7 @@ PING_INTERVAL = 25
 MAX_RECONNECT_DELAY = 120
 
 PENDING_STATE_FILE = STATE_DIR / "pending_orders.json"
+ENTRY_OPPORTUNITY_FILE = STATE_DIR / "entry_opportunity.json"
 
 # Prefix for all Discord messages (remove when system proven stable)
 MSG_PREFIX = "[ETH BB] "
@@ -144,6 +145,101 @@ class WSMonitor:
 
         # Thread-safe REST: each executor thread gets its own Session
         self._thread_local = threading.local()
+
+    # === Entry Opportunity State ===
+
+    def _make_entry_opportunity_id(self, bar_ts: int, direction: str) -> str:
+        return f"{self.cfg.instId}:{bar_ts}:{direction}"
+
+    def _load_entry_opportunity(self) -> dict:
+        return load_state(ENTRY_OPPORTUNITY_FILE)
+
+    def _save_entry_opportunity(self, state: Optional[dict]):
+        if state is None:
+            save_state(ENTRY_OPPORTUNITY_FILE, {})
+        else:
+            save_state(ENTRY_OPPORTUNITY_FILE, state)
+
+    def _is_entry_opportunity_active(self, opp: Optional[dict]) -> bool:
+        if not opp:
+            return False
+        return opp.get("status") not in {
+            "FINAL_SUCCESS",
+            "FINAL_REJECTED",
+            "FINAL_ORPHAN_FILLED",
+        }
+
+    def _entry_opportunity_matches(self, opp: Optional[dict], side: str = "", direction: str = "") -> bool:
+        if not opp:
+            return False
+        if direction:
+            return opp.get("direction") == direction
+        if side:
+            inferred = "LONG" if side == "buy" else "SHORT"
+            return opp.get("direction") == inferred
+        return False
+
+    async def _reconcile_entry_opportunity(self, opportunity_id: str, rejected_result: Optional[dict] = None) -> bool:
+        """Return True if a real position/fill exists and opportunity should proceed as filled."""
+        opp = self._load_entry_opportunity()
+        if opp.get("opportunity_id") != opportunity_id:
+            return False
+
+        positions = await self._rest_exchange("get_positions", self.cfg.instId)
+        live_pos = None
+        if positions:
+            for p in positions:
+                if float(p.get("pos", 0)) != 0:
+                    live_pos = p
+                    break
+
+        if live_pos:
+            direction = "LONG" if float(live_pos.get("pos", 0)) > 0 else "SHORT"
+            opp.update({
+                "direction": direction,
+                "status": "FILLED",
+                "fill_px": float(live_pos.get("avgPx", 0) or 0),
+                "fill_sz": f"{abs(float(live_pos.get('pos', 0))):.2f}",
+                "last_error": rejected_result,
+            })
+            self._save_entry_opportunity(opp)
+            return True
+
+        fills = await self._rest_exchange(
+            "_request",
+            "GET",
+            "/trade/fills-history",
+            params={"instType": "SWAP", "instId": self.cfg.instId, "limit": "20"},
+        )
+        target_ord_id = opp.get("ord_id")
+        direction = opp.get("direction")
+        for fill in (fills or {}).get("data", []):
+            fill_side = fill.get("side", "")
+            fill_dir = "LONG" if fill_side == "buy" else "SHORT"
+            if target_ord_id and fill.get("ordId") == target_ord_id:
+                opp.update({
+                    "status": "FILLED",
+                    "direction": fill_dir,
+                    "fill_px": float(fill.get("fillPx", 0) or 0),
+                    "fill_sz": fill.get("fillSz", "0"),
+                    "last_error": rejected_result,
+                })
+                self._save_entry_opportunity(opp)
+                return True
+            if not target_ord_id and direction == fill_dir:
+                opp.update({
+                    "status": "FILLED",
+                    "fill_px": float(fill.get("fillPx", 0) or 0),
+                    "fill_sz": fill.get("fillSz", "0"),
+                    "last_error": rejected_result,
+                })
+                self._save_entry_opportunity(opp)
+                return True
+
+        opp.update({"status": "FINAL_REJECTED", "last_error": rejected_result})
+        self._save_entry_opportunity(opp)
+        await send_discord(f"{MSG_PREFIX}⚠️ 市价开仓失败且当前无持仓: {rejected_result}", mention=True)
+        return False
 
     # === Thread-safe REST ===
 
@@ -443,6 +539,11 @@ class WSMonitor:
 
     async def _on_entry_filled(self, direction: str, fill_price: float, fill_sz: str):
         """Entry filled → validate → set SL → set TP → save state."""
+        opp = self._load_entry_opportunity()
+        if opp and opp.get("status") in {"PROTECTED", "FINAL_SUCCESS"}:
+            logger.info(f"Entry already finalized for {opp.get('opportunity_id')}, skipping duplicate fill handling")
+            return
+
         self._entry_in_progress = True
         try:
             await self._on_entry_filled_inner(direction, fill_price, fill_sz)
@@ -597,6 +698,18 @@ class WSMonitor:
         self.executor.save_position(pos_state)
         self.executor._append_open_trade_log_if_missing(pos_state, source="entry_fill")
 
+        opp = self._load_entry_opportunity()
+        if opp and self._is_entry_opportunity_active(opp):
+            opp.update({
+                "status": "FINAL_SUCCESS",
+                "fill_px": fill_price,
+                "fill_sz": actual_sz,
+                "sl_ready": True,
+                "tp_ready": bool(tp_ord_id),
+                "announced": True,
+            })
+            self._save_entry_opportunity(opp)
+
         await send_discord(
             f"{MSG_PREFIX}📊 OKX BB: {direction} {self.cfg.coin}\n"
             f"入场: ${fill_price:.2f}\n"
@@ -731,11 +844,24 @@ class WSMonitor:
 
                 logger.info(f"Filled: {side} {acc_fill} @ {avg_px}")
 
+                opp = self._load_entry_opportunity()
+                if opp and opp.get("status") in {"PROTECTED", "FINAL_SUCCESS"}:
+                    logger.info("Ignoring duplicate filled event after finalized entry opportunity")
+                    continue
+
                 triggered_dir = self._triggered_direction
                 if triggered_dir:
                     # Normal: orders-algo arrived first
                     self._triggered_direction = None
                     self._triggered_sz = None
+                    opp = self._load_entry_opportunity()
+                    if opp and self._is_entry_opportunity_active(opp):
+                        opp.update({
+                            "status": "FILLED",
+                            "fill_px": avg_px,
+                            "fill_sz": acc_fill,
+                        })
+                        self._save_entry_opportunity(opp)
                     await self._on_entry_filled(triggered_dir, avg_px, acc_fill)
 
                 elif not self.executor.load_position():
@@ -747,9 +873,28 @@ class WSMonitor:
                             self._pending_long_algoId = None
                         else:
                             self._pending_short_algoId = None
+                        opp = self._load_entry_opportunity()
+                        if opp and self._is_entry_opportunity_active(opp):
+                            opp.update({
+                                "status": "FILLED",
+                                "direction": inferred,
+                                "fill_px": avg_px,
+                                "fill_sz": acc_fill,
+                            })
+                            self._save_entry_opportunity(opp)
                         await self._on_entry_filled(inferred, avg_px, acc_fill)
                     else:
-                        await self._check_position_closed()
+                        opp = self._load_entry_opportunity()
+                        if opp and self._is_entry_opportunity_active(opp) and self._entry_opportunity_matches(opp, side=side):
+                            opp.update({
+                                "status": "FILLED",
+                                "fill_px": avg_px,
+                                "fill_sz": acc_fill,
+                            })
+                            self._save_entry_opportunity(opp)
+                            await self._on_entry_filled(opp["direction"], avg_px, acc_fill)
+                        else:
+                            await self._check_position_closed()
                 else:
                     # Has position — SL/TP fill
                     await self._check_position_closed()
@@ -790,6 +935,8 @@ class WSMonitor:
         ord_id = None
         sz = None
         prev_close = None
+        bar_ts = None
+        opportunity_id = None
 
         async with self._order_lock:
             if self._triggered_direction or self._entry_in_progress:
@@ -800,6 +947,7 @@ class WSMonitor:
 
             closes = self.accumulator.closes
             idx = len(closes) - 1
+            bar_ts = int(time.time() // 1800 * 1800 * 1000)
             bb = get_bb_levels(closes, self.cfg.strategy.bb_period,
                                self.cfg.strategy.bb_multiplier, idx)
             if bb is None:
@@ -835,6 +983,25 @@ class WSMonitor:
                 return
 
             dir_label = "LONG" if direction == "buy" else "SHORT"
+            opportunity_id = self._make_entry_opportunity_id(bar_ts, dir_label)
+            opp = self._load_entry_opportunity()
+            if opp.get("opportunity_id") == opportunity_id and self._is_entry_opportunity_active(opp):
+                logger.info(f"Entry opportunity already active: {opportunity_id}")
+                return
+
+            self._save_entry_opportunity({
+                "opportunity_id": opportunity_id,
+                "bar_ts": bar_ts,
+                "direction": dir_label,
+                "status": "SUBMITTING",
+                "ord_id": None,
+                "fill_px": None,
+                "fill_sz": None,
+                "sl_ready": False,
+                "tp_ready": False,
+                "announced": False,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
             logger.info(f"📊 Close-confirm signal: {dir_label} @ prev_close={prev_close:.2f}")
 
             # Market order entry
@@ -843,10 +1010,19 @@ class WSMonitor:
 
             if result.get("code") == "0" and result.get("data"):
                 ord_id = result["data"][0].get("ordId", "")
+                opp = self._load_entry_opportunity()
+                if opp.get("opportunity_id") == opportunity_id:
+                    opp.update({"status": "ACKED", "ord_id": ord_id})
+                    self._save_entry_opportunity(opp)
                 logger.info(f"Market order placed: {direction} sz={sz} ordId={ord_id}")
             else:
                 logger.error(f"Market order failed: {result}")
-                await send_discord(f"{MSG_PREFIX}⚠️ 市价开仓失败: {result}", mention=True)
+                opp = self._load_entry_opportunity()
+                if opp.get("opportunity_id") == opportunity_id:
+                    opp.update({"status": "REJECTED_PENDING_RECONCILE", "last_error": result})
+                    self._save_entry_opportunity(opp)
+                if opportunity_id:
+                    await self._reconcile_entry_opportunity(opportunity_id, result)
                 return
 
         # Phase 2: wait for fill + _on_entry_filled (lock released)
@@ -858,10 +1034,20 @@ class WSMonitor:
                     pos_info = next(p for p in positions if float(p.get("pos", 0)) != 0)
                     fill_price = float(pos_info.get("avgPx", prev_close))
                     fill_sz = f"{abs(float(pos_info.get('pos', 0))):.2f}"
+                    opp = self._load_entry_opportunity()
+                    if opp.get("opportunity_id") == opportunity_id and self._is_entry_opportunity_active(opp):
+                        opp.update({
+                            "status": "FILLED",
+                            "fill_px": fill_price,
+                            "fill_sz": fill_sz,
+                        })
+                        self._save_entry_opportunity(opp)
                     await self._on_entry_filled(dir_label, fill_price, fill_sz)
                     break
                 logger.warning(f"Position check attempt {attempt+1}/3: not found yet")
             else:
+                if opportunity_id:
+                    await self._reconcile_entry_opportunity(opportunity_id, {"msg": f"Market order sent but no position after 3 checks ordId={ord_id}"})
                 logger.error(f"Market order sent but no position after 3 checks! ordId={ord_id}")
                 await send_discord(f"{MSG_PREFIX}🚨 市价单已发但3次检查无持仓 ordId={ord_id}，需手动检查", mention=True)
 

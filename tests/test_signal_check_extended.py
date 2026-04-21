@@ -10,7 +10,8 @@ class TestGetMarketContext:
     
     @patch('requests.post')
     def test_success(self, mock_post):
-        from luckytrader.signal import get_market_context
+        from luckytrader.signal import get_market_context, _API_CACHE
+        _API_CACHE.clear()
         mock_post.return_value = MagicMock(json=MagicMock(return_value=[
             {"universe": [{"name": "BTC"}, {"name": "ETH"}, {"name": "SOL"}]},
             [
@@ -28,7 +29,8 @@ class TestGetMarketContext:
     
     @patch('requests.post')
     def test_network_error_returns_empty(self, mock_post):
-        from luckytrader.signal import get_market_context
+        from luckytrader.signal import get_market_context, _API_CACHE
+        _API_CACHE.clear()
         mock_post.side_effect = Exception("timeout")
         ctx = get_market_context()
         assert ctx == {}
@@ -39,7 +41,8 @@ class TestGetRecentFills:
     
     @patch('requests.post')
     def test_success(self, mock_post):
-        from luckytrader.signal import get_recent_fills
+        from luckytrader.signal import get_recent_fills, _API_CACHE
+        _API_CACHE.clear()
         mock_post.return_value = MagicMock(json=MagicMock(return_value=[
             {"coin": "BTC", "side": "B", "sz": "0.001", "px": "67000", "time": 1707600000000},
             {"coin": "BTC", "side": "A", "sz": "0.001", "px": "67500", "time": 1707610000000},
@@ -52,7 +55,8 @@ class TestGetRecentFills:
     
     @patch('requests.post')
     def test_error_returns_empty(self, mock_post):
-        from luckytrader.signal import get_recent_fills
+        from luckytrader.signal import get_recent_fills, _API_CACHE
+        _API_CACHE.clear()
         mock_post.side_effect = Exception("timeout")
         assert get_recent_fills() == []
 

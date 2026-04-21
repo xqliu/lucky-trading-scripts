@@ -45,6 +45,8 @@ def make_monitor(sl_pct=0.03, tp_pct=0.04):
     m._entry_in_progress = False
     m._triggered_direction = None
     m._triggered_sz = None
+    m._load_entry_opportunity = MagicMock(return_value={})
+    m._save_entry_opportunity = MagicMock()
     return m
 
 
@@ -592,3 +594,110 @@ class TestWSMessageRouting:
         _run(m._handle_private_message(msg))
 
         m._on_entry_filled.assert_not_called()
+
+
+class TestEntryOpportunityIdempotency:
+    def test_duplicate_fill_after_final_success_is_ignored(self):
+        m = make_monitor()
+        m._on_entry_filled = AsyncMock()
+        m._check_position_closed = AsyncMock()
+        m._load_entry_opportunity = MagicMock(return_value={
+            "opportunity_id": "x",
+            "status": "FINAL_SUCCESS",
+            "direction": "LONG",
+        })
+
+        msg = TestWSMessageRouting()._msg({
+            "arg": {"channel": "orders"},
+            "data": [{"state": "filled", "side": "buy", "accFillSz": "0.41", "avgPx": "2050.0"}],
+        })
+
+        _run(m._handle_private_message(msg))
+
+        m._on_entry_filled.assert_not_called()
+        m._check_position_closed.assert_not_called()
+
+    def test_order_fill_without_trigger_uses_active_opportunity(self):
+        m = make_monitor()
+        m._on_entry_filled = AsyncMock()
+        saved = []
+        opp = {
+            "opportunity_id": "opp1",
+            "status": "ACKED",
+            "direction": "LONG",
+        }
+        m._load_entry_opportunity = MagicMock(return_value=opp)
+        m._save_entry_opportunity = MagicMock(side_effect=lambda state: saved.append(dict(state)))
+        m.executor.load_position.return_value = None
+
+        msg = TestWSMessageRouting()._msg({
+            "arg": {"channel": "orders"},
+            "data": [{"state": "filled", "side": "buy", "accFillSz": "0.41", "avgPx": "2050.0"}],
+        })
+
+        _run(m._handle_private_message(msg))
+
+        m._on_entry_filled.assert_called_once_with("LONG", 2050.0, "0.41")
+        assert saved[-1]["status"] == "FILLED"
+        assert saved[-1]["fill_px"] == 2050.0
+
+    def test_on_entry_filled_returns_when_already_protected(self):
+        m = make_monitor()
+        m._load_entry_opportunity = MagicMock(return_value={"status": "PROTECTED", "opportunity_id": "x"})
+        m._on_entry_filled_inner = AsyncMock()
+
+        _run(m._on_entry_filled("LONG", 2000.0, "0.41"))
+
+        m._on_entry_filled_inner.assert_not_called()
+
+    def test_reconcile_rejected_to_live_position(self):
+        m = make_monitor()
+        saved = []
+        opp = {
+            "opportunity_id": "opp1",
+            "direction": "LONG",
+            "status": "REJECTED_PENDING_RECONCILE",
+            "ord_id": None,
+        }
+        m._load_entry_opportunity = MagicMock(return_value=opp)
+        m._save_entry_opportunity = MagicMock(side_effect=lambda state: saved.append(dict(state)))
+
+        async def mock_rest_exchange(method, *args, **kwargs):
+            if method == "get_positions":
+                return [{"pos": "0.41", "avgPx": "2158.25"}]
+            raise AssertionError(method)
+
+        m._rest_exchange = mock_rest_exchange
+
+        ok = _run(m._reconcile_entry_opportunity("opp1", {"code": "1"}))
+        assert ok is True
+        assert saved[-1]["status"] == "FILLED"
+        assert saved[-1]["fill_px"] == 2158.25
+
+    def test_reconcile_rejected_true_failure_sends_discord(self):
+        m = make_monitor()
+        saved = []
+        opp = {
+            "opportunity_id": "opp1",
+            "direction": "LONG",
+            "status": "REJECTED_PENDING_RECONCILE",
+            "ord_id": "abc",
+        }
+        m._load_entry_opportunity = MagicMock(return_value=opp)
+        m._save_entry_opportunity = MagicMock(side_effect=lambda state: saved.append(dict(state)))
+
+        async def mock_rest_exchange(method, *args, **kwargs):
+            if method == "get_positions":
+                return []
+            if method == "_request":
+                return {"data": []}
+            raise AssertionError(method)
+
+        m._rest_exchange = mock_rest_exchange
+
+        with patch("okx_bb.ws_monitor.send_discord", new=AsyncMock()) as mock_send:
+            ok = _run(m._reconcile_entry_opportunity("opp1", {"code": "1"}))
+
+        assert ok is False
+        assert saved[-1]["status"] == "FINAL_REJECTED"
+        mock_send.assert_called_once()

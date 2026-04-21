@@ -8,50 +8,134 @@ Lucky Trading Signal System v6.0
 3. 组装报告（展示用字段）
 """
 from hyperliquid.info import Info
+from hyperliquid.utils.error import ClientError, ServerError
 import time
 from datetime import datetime, timezone
 from luckytrader.config import get_config, get_coin_config, TradingConfig
 from luckytrader.indicators import ema, rsi
 from luckytrader.strategy import detect_signal, get_trend_4h, get_range_levels, get_vol_ratio
 
+_INFO_URL = 'https://api.hyperliquid.xyz/info'
+_API_CACHE_TTL_SEC = 15.0
+_API_CACHE = {}
+_INFO_CLIENT = None
+_RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+_MAX_RETRIES = 4
+
+
+def _is_retryable_hl_error(exc):
+    status_code = getattr(exc, 'status_code', None)
+    if status_code in _RETRYABLE_STATUS_CODES:
+        return True
+    try:
+        import requests
+        if isinstance(exc, requests.RequestException):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _retry_delay(attempt):
+    return min(0.8 * (2 ** attempt), 5.0)
+
+
+def _hl_call(label, fn):
+    last_exc = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            return fn()
+        except Exception as exc:
+            last_exc = exc
+            if not _is_retryable_hl_error(exc) or attempt == _MAX_RETRIES - 1:
+                raise
+            wait_s = _retry_delay(attempt)
+            print(f"⚠️ {label} rate-limited/retryable error ({type(exc).__name__}), retry in {wait_s:.1f}s")
+            time.sleep(wait_s)
+    raise last_exc
+
+
+def _get_info_client():
+    global _INFO_CLIENT
+    if _INFO_CLIENT is None:
+        _INFO_CLIENT = _hl_call('Info init', lambda: Info(skip_ws=True, timeout=10))
+    return _INFO_CLIENT
+
+
+def _cache_get(key):
+    cached = _API_CACHE.get(key)
+    if not cached:
+        return None
+    ts, value = cached
+    if time.time() - ts > _API_CACHE_TTL_SEC:
+        _API_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key, value):
+    _API_CACHE[key] = (time.time(), value)
+    return value
+
+
+def _post_info(payload):
+    import requests
+    def _do_post():
+        resp = requests.post(_INFO_URL, json=payload, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    return _hl_call(f"info {payload.get('type', '?')}", _do_post)
+
+
+def _get_user_fills_raw():
+    wallet = get_config().exchange.main_wallet
+    cache_key = ('userFills', wallet)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    raw = _post_info({'type': 'userFills', 'user': wallet})
+    return _cache_set(cache_key, raw)
+
 def get_candles(coin, interval, hours):
-    info = Info(skip_ws=True)
+    info = _get_info_client()
     end = int(time.time() * 1000)
     start = end - hours * 3600 * 1000
-    return info.candles_snapshot(coin, interval, start, end)
+    return _hl_call(f"candles {coin} {interval}", lambda: info.candles_snapshot(coin, interval, start, end))
+
+
+def get_user_state(address):
+    info = _get_info_client()
+    return _hl_call(f"user_state {address}", lambda: info.user_state(address))
 
 def get_market_context():
-    """获取资金费率、OI、ETH数据"""
-    import requests
-    url = 'https://api.hyperliquid.xyz/info'
+    """获取资金费率、OI、主流币上下文；同一进程内短时复用。"""
+    cache_key = 'market_context'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
     try:
-        resp = requests.post(url, json={'type': 'metaAndAssetCtxs'}, timeout=10)
-        data = resp.json()
+        data = _post_info({'type': 'metaAndAssetCtxs'})
         meta = data[0]['universe']
         ctxs = data[1]
-        
+
         context = {}
         for i, asset in enumerate(meta):
-            if asset['name'] in ('BTC', 'ETH'):
+            if asset['name'] in ('BTC', 'ETH', 'SOL'):
                 ctx = ctxs[i]
                 context[asset['name']] = {
                     'funding_rate': float(ctx['funding']),
                     'open_interest': float(ctx['openInterest']),
                     'mark_price': float(ctx['markPx']),
                 }
-        return context
+        return _cache_set(cache_key, context)
     except Exception as e:
         print(f"⚠️ get_market_context failed: {e}")
         return {}
 
 def get_recent_fills(limit=3):
     """获取最近成交（原始 fills，保留供其他模块使用）"""
-    import requests
-    url = 'https://api.hyperliquid.xyz/info'
-    wallet = get_config().exchange.main_wallet
     try:
-        resp = requests.post(url, json={'type': 'userFills', 'user': wallet}, timeout=10)
-        fills = resp.json()[:limit]
+        fills = _get_user_fills_raw()[:limit]
         return [{
             'coin': f['coin'],
             'side': 'BUY' if f['side'] == 'B' else 'SELL',
@@ -65,12 +149,8 @@ def get_recent_fills(limit=3):
 
 def get_recent_trades(limit=3):
     """获取最近 N 笔完整交易（开仓+平仓配对为一行）"""
-    import requests
-    url = 'https://api.hyperliquid.xyz/info'
-    wallet = get_config().exchange.main_wallet
     try:
-        resp = requests.post(url, json={'type': 'userFills', 'user': wallet}, timeout=10)
-        raw = resp.json()[:30]  # 多取一些以便配对
+        raw = _get_user_fills_raw()[:30]  # 多取一些以便配对
     except Exception as e:
         print(f"⚠️ get_recent_trades failed: {e}")
         return []

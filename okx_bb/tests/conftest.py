@@ -34,5 +34,6 @@ def _block_okx_side_effects(tmp_path):
          patch('okx_bb.executor.POSITION_STATE_FILE', test_state_dir / "position_state.json"), \
          patch('okx_bb.executor.TRADE_LOG_FILE', test_state_dir / "trade_log.json"), \
          patch('okx_bb.ws_monitor.PENDING_STATE_FILE', test_state_dir / "pending_orders.json"), \
+         patch('okx_bb.ws_monitor.ENTRY_OPPORTUNITY_FILE', test_state_dir / "entry_opportunity.json"), \
          patch.object(_socket.socket, 'connect', _blocked_connect):
         yield

@@ -15,7 +15,7 @@ class Direction(str, Enum):
 class ExitReason(str, Enum):
     TP = "TP"
     SL = "SL"
-    TIMEOUT = "TIMEOUT"
+    TIMEOUT = "到期平仓"
     EARLY_EXIT = "EARLY_EXIT"
     EMERGENCY = "EMERGENCY"
     MANUAL = "MANUAL"
